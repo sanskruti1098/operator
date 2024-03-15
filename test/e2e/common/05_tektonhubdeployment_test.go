@@ -136,7 +136,7 @@ func (s *TektonHubTestSuite) TearDownTest() {
 func (s *TektonHubTestSuite) Test01_DeployDefault() {
 	s.deploy("", s.resourceNames.TektonHub)
 	fmt.Println("Sleeping....")
-	time.sleep(8 * time.Second)
+	time.Sleep(5 * time.Second)
 	fmt.Println("Sleep Over.....") 
 	s.verifyResources("")
 }
