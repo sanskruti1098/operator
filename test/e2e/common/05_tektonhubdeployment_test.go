@@ -260,6 +260,10 @@ func (s *TektonHubTestSuite) verifyResources(databaseNamespace string) {
 	interval := s.interval
 	timeout := s.timeout
 
+	fmt.println("Sleeping....")
+	time.sleep(8 * time.Second)
+	fmt.println("Sleep over...")
+
 	// assert tekton hub ready status
 	resources.AssertTektonHubCRReadyStatus(t, s.clients, s.resourceNames)
 
