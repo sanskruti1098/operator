@@ -135,6 +135,9 @@ func (s *TektonHubTestSuite) TearDownTest() {
 // deploys default TektonHub CR and verify resources
 func (s *TektonHubTestSuite) Test01_DeployDefault() {
 	s.deploy("", s.resourceNames.TektonHub)
+	fmt.Println("Sleeping....")
+	time.sleep(8 * time.Second)
+	fmt.Println("Sleep Over.....") 
 	s.verifyResources("")
 }
 
@@ -259,10 +262,6 @@ func (s *TektonHubTestSuite) verifyResources(databaseNamespace string) {
 	t := s.T()
 	interval := s.interval
 	timeout := s.timeout
-
-	fmt.println("Sleeping....")
-	time.sleep(8 * time.Second)
-	fmt.println("Sleep over...")
 
 	// assert tekton hub ready status
 	resources.AssertTektonHubCRReadyStatus(t, s.clients, s.resourceNames)
