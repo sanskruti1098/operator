@@ -134,16 +134,18 @@ func (s *TektonHubTestSuite) TearDownTest() {
 
 // deploys default TektonHub CR and verify resources
 func (s *TektonHubTestSuite) Test01_DeployDefault() {
+	fmt.Println("======================================")
+	fmt.Println("I am inside Test01_DeployDefault")
 	s.deploy("", s.resourceNames.TektonHub)
 	s.verifyResources("")
+	fmt.Print("Sleeping....")
+	time.Sleep(15 * time.Second)
+	fmt.Print("Sleep Over.....") 
 }
 
 // deploys TektonHub CR external database
 func (s *TektonHubTestSuite) Test02_DeployWithExternalDatabase() {
 	// deploy external database
-	fmt.Print("Sleeping....")
-	time.Sleep(15 * time.Second)
-	fmt.Print("Sleep Over.....") 
 	s.deployExternalDatabase()
 
 	// deploy tektonHub
