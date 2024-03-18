@@ -134,8 +134,8 @@ func (s *TektonHubTestSuite) TearDownTest() {
 
 // deploys default TektonHub CR and verify resources
 func (s *TektonHubTestSuite) Test01_DeployDefault() {
-	fmt.Println("======================================")
-	fmt.Println("I am inside Test01_DeployDefault")
+	fmt.Print("======================================")
+	fmt.Print("I am inside Test01_DeployDefault")
 	s.deploy("", s.resourceNames.TektonHub)
 	s.verifyResources("")
 	fmt.Print("Sleeping....")
