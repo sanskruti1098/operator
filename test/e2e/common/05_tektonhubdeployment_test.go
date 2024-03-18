@@ -138,9 +138,6 @@ func (s *TektonHubTestSuite) Test01_DeployDefault() {
 	fmt.Print("I am inside Test01_DeployDefault")
 	s.deploy("", s.resourceNames.TektonHub)
 	s.verifyResources("")
-	fmt.Print("Sleeping....")
-	time.Sleep(15 * time.Second)
-	fmt.Print("Sleep Over.....") 
 }
 
 // deploys TektonHub CR external database
@@ -264,6 +261,10 @@ func (s *TektonHubTestSuite) verifyResources(databaseNamespace string) {
 	t := s.T()
 	interval := s.interval
 	timeout := s.timeout
+
+	fmt.Print("Sleeping....")
+	time.Sleep(15 * time.Second)
+	fmt.Print("Sleep Over.....") 
 
 	// assert tekton hub ready status
 	resources.AssertTektonHubCRReadyStatus(t, s.clients, s.resourceNames)
