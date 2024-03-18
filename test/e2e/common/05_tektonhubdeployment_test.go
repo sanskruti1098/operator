@@ -142,7 +142,7 @@ func (s *TektonHubTestSuite) Test01_DeployDefault() {
 func (s *TektonHubTestSuite) Test02_DeployWithExternalDatabase() {
 	// deploy external database
 	fmt.Print("Sleeping....")
-	time.Sleep(5 * time.Second)
+	time.Sleep(15 * time.Second)
 	fmt.Print("Sleep Over.....") 
 	s.deployExternalDatabase()
 
