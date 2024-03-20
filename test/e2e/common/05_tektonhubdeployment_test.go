@@ -133,7 +133,7 @@ func (s *TektonHubTestSuite) TearDownTest() {
 // TODO: add tests to verify data from UI and API endpoint
 
 // deploys TektonHub CR external database
-func (s *TektonHubTestSuite) Test02_DeployWithExternalDatabase() {
+func (s *TektonHubTestSuite) Test01_DeployWithExternalDatabase() {
 	// deploy external database
 	s.deployExternalDatabase()
 
@@ -145,7 +145,7 @@ func (s *TektonHubTestSuite) Test02_DeployWithExternalDatabase() {
 }
 
 // deploys default TektonHub CR and updates the CR to external database
-func (s *TektonHubTestSuite) Test03_DeployDefaultThenUpdateToExternalDatabase() {
+func (s *TektonHubTestSuite) Test02_DeployDefaultThenUpdateToExternalDatabase() {
 	t := s.T()
 	pollInterval := s.interval
 	timeout := s.timeout
@@ -180,7 +180,7 @@ func (s *TektonHubTestSuite) Test03_DeployDefaultThenUpdateToExternalDatabase() 
 
 // deploys the hub with invalid name
 // operator accepts only TektonHub name with "hub"
-func (s *TektonHubTestSuite) Test04_DeployWithInvalidHubName() {
+func (s *TektonHubTestSuite) Test03_DeployWithInvalidHubName() {
 	t := s.T()
 
 	// random hub name
@@ -221,7 +221,7 @@ func (s *TektonHubTestSuite) Test04_DeployWithInvalidHubName() {
 }
 
 // deploys default TektonHub CR and verify resources
-func (s *TektonHubTestSuite) Test01_DeployDefault() {
+func (s *TektonHubTestSuite) Test04_DeployDefault() {
 	fmt.Print("======================================")
 	fmt.Print("I am inside Test01_DeployDefault")
 	s.deploy("", s.resourceNames.TektonHub)
