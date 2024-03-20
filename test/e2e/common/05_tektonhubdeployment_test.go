@@ -132,14 +132,6 @@ func (s *TektonHubTestSuite) TearDownTest() {
 // actual tests
 // TODO: add tests to verify data from UI and API endpoint
 
-// deploys default TektonHub CR and verify resources
-func (s *TektonHubTestSuite) Test01_DeployDefault() {
-	fmt.Print("======================================")
-	fmt.Print("I am inside Test01_DeployDefault")
-	s.deploy("", s.resourceNames.TektonHub)
-	s.verifyResources("")
-}
-
 // deploys TektonHub CR external database
 func (s *TektonHubTestSuite) Test02_DeployWithExternalDatabase() {
 	// deploy external database
@@ -226,6 +218,14 @@ func (s *TektonHubTestSuite) Test04_DeployWithInvalidHubName() {
 
 	err := wait.PollImmediate(s.interval, 30*time.Second, verifyStatus)
 	require.NoError(t, err)
+}
+
+// deploys default TektonHub CR and verify resources
+func (s *TektonHubTestSuite) Test01_DeployDefault() {
+	fmt.Print("======================================")
+	fmt.Print("I am inside Test01_DeployDefault")
+	s.deploy("", s.resourceNames.TektonHub)
+	s.verifyResources("")
 }
 
 // helper functions
