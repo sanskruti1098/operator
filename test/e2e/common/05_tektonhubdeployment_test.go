@@ -134,6 +134,8 @@ func (s *TektonHubTestSuite) TearDownTest() {
 
 // deploys TektonHub CR external database
 func (s *TektonHubTestSuite) Test01_DeployWithExternalDatabase() {
+	fmt.Print("======================================")
+	fmt.Print("I am inside Test01_DeployWithExternalDatabase")
 	// deploy external database
 	s.deployExternalDatabase()
 
@@ -146,6 +148,8 @@ func (s *TektonHubTestSuite) Test01_DeployWithExternalDatabase() {
 
 // deploys default TektonHub CR and updates the CR to external database
 func (s *TektonHubTestSuite) Test02_DeployDefaultThenUpdateToExternalDatabase() {
+	fmt.Print("======================================")
+	fmt.Print("I am inside Test02_DeployDefaultThenUpdateToExternalDatabase")
 	t := s.T()
 	pollInterval := s.interval
 	timeout := s.timeout
@@ -181,6 +185,8 @@ func (s *TektonHubTestSuite) Test02_DeployDefaultThenUpdateToExternalDatabase() 
 // deploys the hub with invalid name
 // operator accepts only TektonHub name with "hub"
 func (s *TektonHubTestSuite) Test03_DeployWithInvalidHubName() {
+	fmt.Print("======================================")
+	fmt.Print("I am inside Test03_DeployWithInvalidHubName")
 	t := s.T()
 
 	// random hub name
@@ -223,7 +229,7 @@ func (s *TektonHubTestSuite) Test03_DeployWithInvalidHubName() {
 // deploys default TektonHub CR and verify resources
 func (s *TektonHubTestSuite) Test04_DeployDefault() {
 	fmt.Print("======================================")
-	fmt.Print("I am inside Test01_DeployDefault")
+	fmt.Print("I am inside Test04_DeployDefault")
 	s.deploy("", s.resourceNames.TektonHub)
 	s.verifyResources("")
 }
@@ -262,9 +268,9 @@ func (s *TektonHubTestSuite) verifyResources(databaseNamespace string) {
 	interval := s.interval
 	timeout := s.timeout
 
-	fmt.Print("Sleeping....")
-	time.Sleep(15 * time.Second)
-	fmt.Print("Sleep Over.....") 
+	//fmt.Print("Sleeping....")
+	//time.Sleep(15 * time.Second)
+	//fmt.Print("Sleep Over.....") 
 
 	// assert tekton hub ready status
 	resources.AssertTektonHubCRReadyStatus(t, s.clients, s.resourceNames)
