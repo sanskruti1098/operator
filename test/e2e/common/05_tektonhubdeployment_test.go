@@ -110,6 +110,19 @@ func (s *TektonHubTestSuite) SetupTest() {
 	s.logger.Debug("removing the tekton hub cr if any")
 	s.undeploy("")
 	s.undeployExternalDatabase()
+		// wait for target namespace to be deleted
+	interval := 3 * time.Second
+	timeout := 2 * time.Minute
+	er := resources.WaitForNamespaceDeletion(s.clients.KubeClient, s.resourceNames.TargetNamespace, interval, timeout)
+	if er != nil {
+		s.logger.Debugw("target namespace already cleanedup",
+			"namespace", s.resourceNames.TargetNamespace,
+		)
+	} else {
+		s.logger.Debugw("target namespace removed",
+			"namespace", s.resourceNames.TargetNamespace,
+		)
+	}
 	err := resources.CreateNamespace(s.clients.KubeClient, s.resourceNames.TargetNamespace)
 	require.NoError(t, err, "create namespace: %s", s.resourceNames.TargetNamespace)
 	s.logger.Debug("test environment ready. starting the actual test")
@@ -133,7 +146,7 @@ func (s *TektonHubTestSuite) TearDownTest() {
 // TODO: add tests to verify data from UI and API endpoint
 
 // deploys TektonHub CR external database
-func (s *TektonHubTestSuite) Test01_DeployWithExternalDatabase() {
+func (s *TektonHubTestSuite) Test02_DeployWithExternalDatabase() {
 	fmt.Print("======================================")
 	fmt.Print("I am inside Test01_DeployWithExternalDatabase")
 	// deploy external database
@@ -147,7 +160,7 @@ func (s *TektonHubTestSuite) Test01_DeployWithExternalDatabase() {
 }
 
 // deploys default TektonHub CR and updates the CR to external database
-func (s *TektonHubTestSuite) Test02_DeployDefaultThenUpdateToExternalDatabase() {
+func (s *TektonHubTestSuite) Test03_DeployDefaultThenUpdateToExternalDatabase() {
 	fmt.Print("======================================")
 	fmt.Print("I am inside Test02_DeployDefaultThenUpdateToExternalDatabase")
 	t := s.T()
@@ -184,7 +197,7 @@ func (s *TektonHubTestSuite) Test02_DeployDefaultThenUpdateToExternalDatabase() 
 
 // deploys the hub with invalid name
 // operator accepts only TektonHub name with "hub"
-func (s *TektonHubTestSuite) Test03_DeployWithInvalidHubName() {
+func (s *TektonHubTestSuite) Test04_DeployWithInvalidHubName() {
 	fmt.Print("======================================")
 	fmt.Print("I am inside Test03_DeployWithInvalidHubName")
 	t := s.T()
@@ -227,9 +240,9 @@ func (s *TektonHubTestSuite) Test03_DeployWithInvalidHubName() {
 }
 
 // deploys default TektonHub CR and verify resources
-func (s *TektonHubTestSuite) Test04_DeployDefault() {
+func (s *TektonHubTestSuite) Test01_DeployDefault() {
 	fmt.Print("======================================")
-	fmt.Print("I am inside Test04_DeployDefault")
+	fmt.Print("I am inside Test01_DeployDefault")
 	s.deploy("", s.resourceNames.TektonHub)
 	s.verifyResources("")
 }
