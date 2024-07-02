@@ -23,6 +23,7 @@ import (
 	"github.com/tektoncd/operator/pkg/apis/operator/v1alpha1"
 	"github.com/tektoncd/operator/pkg/reconciler/shared/hash"
 	"go.uber.org/zap"
+	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	corev1 "k8s.io/api/core/v1"
@@ -33,10 +34,12 @@ import (
 )
 
 const (
-	KindConfigMap               = "ConfigMap"
-	KindDeployment              = "Deployment"
-	KindStatefulSet             = "StatefulSet"
-	KindHorizontalPodAutoscaler = "HorizontalPodAutoscaler"
+	KindConfigMap                      = "ConfigMap"
+	KindDeployment                     = "Deployment"
+	KindStatefulSet                    = "StatefulSet"
+	KindHorizontalPodAutoscaler        = "HorizontalPodAutoscaler"
+	KindValidatingWebhookConfiguration = "ValidatingWebhookConfiguration"
+	KindMutatingWebhookConfiguration   = "MutatingWebhookConfiguration"
 )
 
 type OptionsTransformer struct {
@@ -50,7 +53,7 @@ func ExecuteAdditionalOptionsTransformer(ctx context.Context, manifest *mf.Manif
 		logger:  logging.FromContext(ctx),
 	}
 
-	if additionalOptions.Disabled {
+	if additionalOptions.Disabled != nil && *additionalOptions.Disabled {
 		return nil
 	}
 
@@ -71,17 +74,15 @@ func ExecuteAdditionalOptionsTransformer(ctx context.Context, manifest *mf.Manif
 		return err
 	}
 
-	// disabled HPA creation until we resolve the bug
-	// BUG: https://github.com/tektoncd/operator/issues/2002
 	// create HorizontalPodAutoscaler, if not found in the existing manifest
-	// extraHPAs, err := ot.createHorizontalPodAutoscalers(manifest, targetNamespace, additionalOptions)
-	// if err != nil {
-	// 	return err
-	// }
-	// // update into the manifests
-	// if err = ot.addInToManifest(manifest, extraHPAs); err != nil {
-	// 	return err
-	// }
+	extraHPAs, err := ot.createHorizontalPodAutoscalers(manifest, targetNamespace, additionalOptions)
+	if err != nil {
+		return err
+	}
+	// update into the manifests
+	if err = ot.addInToManifest(manifest, extraHPAs); err != nil {
+		return err
+	}
 
 	return nil
 }
@@ -117,6 +118,8 @@ func (ot *OptionsTransformer) transform(u *unstructured.Unstructured) error {
 	case KindHorizontalPodAutoscaler:
 		return ot.updateHorizontalPodAutoscalers(u)
 
+	case KindValidatingWebhookConfiguration, KindMutatingWebhookConfiguration:
+		return ot.updateWebhookConfiguration(u)
 	}
 
 	return nil
@@ -630,48 +633,109 @@ func (ot *OptionsTransformer) updateHorizontalPodAutoscalers(u *unstructured.Uns
 	return nil
 }
 
-// disabled HPA creation until we resolve the bug
-// BUG: https://github.com/tektoncd/operator/issues/2002
-// func (ot *OptionsTransformer) createHorizontalPodAutoscalers(manifest *mf.Manifest, targetNamespace string, additionalOptions v1alpha1.AdditionalOptions) ([]unstructured.Unstructured, error) {
-// 	newHPAs := []unstructured.Unstructured{}
-// 	existingHPAs := manifest.Filter(mf.Any(mf.ByKind(KindHorizontalPodAutoscaler)))
-// 	for hpaName, newHPA := range additionalOptions.HorizontalPodAutoscalers {
-// 		found := false
-// 		for _, resource := range existingHPAs.Resources() {
-// 			if resource.GetName() == hpaName {
-// 				found = true
-// 				break
-// 			}
-// 		}
-// 		if found {
-// 			continue
-// 		}
-//
-// 		// update name
-// 		newHPA.SetName(hpaName)
-//
-// 		// update the namespace to targetNamespace
-// 		newHPA.SetNamespace(targetNamespace)
-//
-// 		// update kind
-// 		if newHPA.TypeMeta.Kind == "" {
-// 			newHPA.TypeMeta.Kind = KindHorizontalPodAutoscaler
-// 		}
-//
-// 		// update api version
-// 		if newHPA.TypeMeta.APIVersion == "" {
-// 			newHPA.TypeMeta.APIVersion = autoscalingv2.SchemeGroupVersion.String()
-// 		}
-//
-// 		// convert hpa to unstructured object
-// 		obj, err := apimachineryRuntime.DefaultUnstructuredConverter.ToUnstructured(&newHPA)
-// 		if err != nil {
-// 			return nil, err
-// 		}
-// 		u := unstructured.Unstructured{}
-// 		u.SetUnstructuredContent(obj)
-// 		newHPAs = append(newHPAs, u)
-// 	}
-//
-// 	return newHPAs, nil
-// }
+func (ot *OptionsTransformer) createHorizontalPodAutoscalers(manifest *mf.Manifest, targetNamespace string, additionalOptions v1alpha1.AdditionalOptions) ([]unstructured.Unstructured, error) {
+	newHPAs := []unstructured.Unstructured{}
+	existingHPAs := manifest.Filter(mf.Any(mf.ByKind(KindHorizontalPodAutoscaler)))
+	for hpaName, newHPA := range additionalOptions.HorizontalPodAutoscalers {
+		found := false
+		for _, resource := range existingHPAs.Resources() {
+			if resource.GetName() == hpaName {
+				found = true
+				break
+			}
+		}
+		if found {
+			continue
+		}
+
+		// update name
+		newHPA.SetName(hpaName)
+
+		// update the namespace to targetNamespace
+		newHPA.SetNamespace(targetNamespace)
+
+		// update kind
+		if newHPA.TypeMeta.Kind == "" {
+			newHPA.TypeMeta.Kind = KindHorizontalPodAutoscaler
+		}
+
+		// update api version
+		if newHPA.TypeMeta.APIVersion == "" {
+			newHPA.TypeMeta.APIVersion = autoscalingv2.SchemeGroupVersion.String()
+		}
+
+		// convert hpa to unstructured object
+		obj, err := apimachineryRuntime.DefaultUnstructuredConverter.ToUnstructured(&newHPA)
+		if err != nil {
+			return nil, err
+		}
+		u := unstructured.Unstructured{}
+		u.SetUnstructuredContent(obj)
+		newHPAs = append(newHPAs, u)
+	}
+
+	return newHPAs, nil
+}
+
+func (ot *OptionsTransformer) updateWebhookConfiguration(u *unstructured.Unstructured) error {
+	webhookOptions, found := ot.options.WebhookConfigurationOptions[u.GetName()]
+	if !found {
+		return nil
+	}
+
+	switch u.GetKind() {
+	case KindValidatingWebhookConfiguration:
+		targetWebhookConfiguration := &admissionregistrationv1.ValidatingWebhookConfiguration{}
+		err := apimachineryRuntime.DefaultUnstructuredConverter.FromUnstructured(u.Object, targetWebhookConfiguration)
+		if err != nil {
+			return err
+		}
+		for i, w := range targetWebhookConfiguration.Webhooks {
+			if u.GetName() == w.Name {
+				if webhookOptions.FailurePolicy != nil {
+					targetWebhookConfiguration.Webhooks[i].FailurePolicy = webhookOptions.FailurePolicy
+				}
+				if webhookOptions.TimeoutSeconds != nil {
+					targetWebhookConfiguration.Webhooks[i].TimeoutSeconds = webhookOptions.TimeoutSeconds
+				}
+				if webhookOptions.SideEffects != nil {
+					targetWebhookConfiguration.Webhooks[i].SideEffects = webhookOptions.SideEffects
+				}
+			}
+		}
+		// convert webhookconfigurtion to unstructured object
+		obj, err := apimachineryRuntime.DefaultUnstructuredConverter.ToUnstructured(targetWebhookConfiguration)
+		if err != nil {
+			return err
+		}
+		u.SetUnstructuredContent(obj)
+
+	case KindMutatingWebhookConfiguration:
+		targetWebhookConfiguration := &admissionregistrationv1.MutatingWebhookConfiguration{}
+		err := apimachineryRuntime.DefaultUnstructuredConverter.FromUnstructured(u.Object, targetWebhookConfiguration)
+		if err != nil {
+			return err
+		}
+		for i, w := range targetWebhookConfiguration.Webhooks {
+			if u.GetName() == w.Name {
+				if webhookOptions.FailurePolicy != nil {
+					targetWebhookConfiguration.Webhooks[i].FailurePolicy = webhookOptions.FailurePolicy
+				}
+				if webhookOptions.TimeoutSeconds != nil {
+					targetWebhookConfiguration.Webhooks[i].TimeoutSeconds = webhookOptions.TimeoutSeconds
+				}
+				if webhookOptions.SideEffects != nil {
+					targetWebhookConfiguration.Webhooks[i].SideEffects = webhookOptions.SideEffects
+				}
+			}
+		}
+		// convert webhookconfigurtion to unstructured object
+		obj, err := apimachineryRuntime.DefaultUnstructuredConverter.ToUnstructured(targetWebhookConfiguration)
+		if err != nil {
+			return err
+		}
+		u.SetUnstructuredContent(obj)
+	}
+
+	return nil
+}

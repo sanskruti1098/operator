@@ -24,6 +24,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/tektoncd/operator/pkg/apis/operator/v1alpha1"
 	"github.com/tektoncd/pipeline/test/diff"
+	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	corev1 "k8s.io/api/core/v1"
@@ -36,6 +37,9 @@ func TestExecuteAdditionalOptionsTransformer(t *testing.T) {
 	// context
 	ctx := context.TODO()
 	targetNamespace := "tekton-pipelines"
+	ignorePolicy := admissionregistrationv1.Ignore
+	failPolicy := admissionregistrationv1.Fail
+	sideEffectUnknown := admissionregistrationv1.SideEffectClassUnknown
 
 	// verify the changes applied on the manifest
 
@@ -48,7 +52,15 @@ func TestExecuteAdditionalOptionsTransformer(t *testing.T) {
 		{
 			name: "verify-disabled",
 			additionalOptions: v1alpha1.AdditionalOptions{
-				Disabled: true,
+				Disabled: ptr.Bool(false),
+			},
+			inputFilename:          "./testdata/test-additional-options-base.yaml",
+			expectedResultFilename: "./testdata/test-additional-options-base.yaml",
+		},
+		{
+			name: "verify-disabled-with-nil",
+			additionalOptions: v1alpha1.AdditionalOptions{
+				Disabled: nil,
 			},
 			inputFilename:          "./testdata/test-additional-options-base.yaml",
 			expectedResultFilename: "./testdata/test-additional-options-base.yaml",
@@ -56,7 +68,7 @@ func TestExecuteAdditionalOptionsTransformer(t *testing.T) {
 		{
 			name: "test-configmap",
 			additionalOptions: v1alpha1.AdditionalOptions{
-				Disabled: false,
+				Disabled: ptr.Bool(false),
 				ConfigMaps: map[string]corev1.ConfigMap{
 					"config-defaults": {
 						ObjectMeta: metav1.ObjectMeta{
@@ -100,7 +112,7 @@ func TestExecuteAdditionalOptionsTransformer(t *testing.T) {
 		{
 			name: "test-deployment",
 			additionalOptions: v1alpha1.AdditionalOptions{
-				Disabled: false,
+				Disabled: ptr.Bool(false),
 				Deployments: map[string]appsv1.Deployment{
 					"tekton-pipelines-controller": {
 						ObjectMeta: metav1.ObjectMeta{
@@ -241,7 +253,7 @@ func TestExecuteAdditionalOptionsTransformer(t *testing.T) {
 		{
 			name: "empty-labels-and-annotations",
 			additionalOptions: v1alpha1.AdditionalOptions{
-				Disabled: false,
+				Disabled: ptr.Bool(false),
 				ConfigMaps: map[string]corev1.ConfigMap{
 					"config-defaults": {
 						ObjectMeta: metav1.ObjectMeta{
@@ -257,7 +269,7 @@ func TestExecuteAdditionalOptionsTransformer(t *testing.T) {
 		{
 			name: "test-statefulsets",
 			additionalOptions: v1alpha1.AdditionalOptions{
-				Disabled: false,
+				Disabled: ptr.Bool(false),
 				StatefulSets: map[string]appsv1.StatefulSet{
 					"web": {
 						ObjectMeta: metav1.ObjectMeta{
@@ -429,7 +441,7 @@ func TestExecuteAdditionalOptionsTransformer(t *testing.T) {
 		{
 			name: "test-hpa",
 			additionalOptions: v1alpha1.AdditionalOptions{
-				Disabled: false,
+				Disabled: ptr.Bool(false),
 				HorizontalPodAutoscalers: map[string]autoscalingv2.HorizontalPodAutoscaler{
 					"new-hpa": {
 						ObjectMeta: metav1.ObjectMeta{
@@ -543,6 +555,25 @@ func TestExecuteAdditionalOptionsTransformer(t *testing.T) {
 			inputFilename:          "./testdata/test-additional-options-base-hpa.yaml",
 			expectedResultFilename: "./testdata/test-additional-options-test-hpa.yaml",
 		},
+		{
+			name: "test-webhook",
+			additionalOptions: v1alpha1.AdditionalOptions{
+				Disabled: ptr.Bool(false),
+				WebhookConfigurationOptions: map[string]v1alpha1.WebhookConfigurationOptions{
+					"validation.webhook.pipeline.tekton.dev": {
+						FailurePolicy:  &ignorePolicy,
+						TimeoutSeconds: ptr.Int32(10),
+						SideEffects:    &sideEffectUnknown,
+					},
+					"webhook.pipeline.tekton.dev": {
+						FailurePolicy:  &failPolicy,
+						TimeoutSeconds: ptr.Int32(10),
+					},
+				},
+			},
+			inputFilename:          "./testdata/test-additional-options-base-webhook.yaml",
+			expectedResultFilename: "./testdata/test-additional-options-test-webhook.yaml",
+		},
 	}
 
 	for _, tc := range tcs {
@@ -558,7 +589,6 @@ func TestExecuteAdditionalOptionsTransformer(t *testing.T) {
 			// execute with additional options transformer
 			err = ExecuteAdditionalOptionsTransformer(ctx, &targetManifest, targetNamespace, tc.additionalOptions)
 			require.NoError(t, err)
-
 			if d := cmp.Diff(expectedManifest.Resources(), targetManifest.Resources()); d != "" {
 				t.Errorf("Diff %s", diff.PrintWantGot(d))
 			}
