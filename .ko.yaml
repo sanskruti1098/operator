@@ -1,5 +1,14 @@
-defaultBaseImage: cgr.dev/chainguard/static
+# Use a universal base image with multi-architecture support
+defaultBaseImage: registry.access.redhat.com/ubi9/ubi-minimal
+
+# Explicit overrides to ensure all components use the same compatible base
 baseImageOverrides:
+  # Kubernetes components
+  github.com/tektoncd/operator/cmd/kubernetes/operator: registry.access.redhat.com/ubi9/ubi-minimal
+  github.com/tektoncd/operator/cmd/kubernetes/webhook: registry.access.redhat.com/ubi9/ubi-minimal
+  github.com/tektoncd/operator/cmd/kubernetes/proxy-webhook: registry.access.redhat.com/ubi9/ubi-minimal
+
+  # OpenShift components
   github.com/tektoncd/operator/cmd/openshift/operator: registry.access.redhat.com/ubi9/ubi-minimal
   github.com/tektoncd/operator/cmd/openshift/webhook: registry.access.redhat.com/ubi9/ubi-minimal
   github.com/tektoncd/operator/cmd/openshift/proxy-webhook: registry.access.redhat.com/ubi9/ubi-minimal
