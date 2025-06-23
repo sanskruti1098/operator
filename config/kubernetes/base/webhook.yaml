@@ -35,6 +35,8 @@ spec:
       - name: tekton-operator-webhook
         image: ko://github.com/tektoncd/operator/cmd/kubernetes/webhook
         env:
+        - name: KUBERNETES_MIN_VERSION
+          value: "v1.0.0"
         - name: SYSTEM_NAMESPACE
           valueFrom:
             fieldRef:
@@ -53,6 +55,14 @@ spec:
           value: tekton-operator-webhook-certs
         - name: METRICS_DOMAIN
           value: tekton.dev/operator
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - "ALL"
+          seccompProfile:
+            type: RuntimeDefault
         ports:
         - name: https-webhook
           containerPort: 8443

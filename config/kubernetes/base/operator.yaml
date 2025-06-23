@@ -33,11 +33,13 @@ spec:
         image: ko://github.com/tektoncd/operator/cmd/kubernetes/operator
         args:
         - "-controllers"
-        - "tektonconfig,tektonpipeline,tektontrigger,tektonhub,tektonchain,tektonresult,tektondashboard,manualapprovalgate"
+        - "tektonconfig,tektonpipeline,tektontrigger,tektonhub,tektonchain,tektonresult,tektondashboard,manualapprovalgate,tektonpruner"
         - "-unique-process-name"
         - "tekton-operator-lifecycle"
         imagePullPolicy: Always
         env:
+        - name: KUBERNETES_MIN_VERSION
+          value: "v1.0.0"
         - name: SYSTEM_NAMESPACE
           valueFrom:
             fieldRef:
@@ -51,7 +53,7 @@ spec:
         - name: IMAGE_PIPELINES_PROXY
           value: ko://github.com/tektoncd/operator/cmd/kubernetes/proxy-webhook
         - name: IMAGE_JOB_PRUNER_TKN
-          value: gcr.io/tekton-releases/dogfooding/tkn@sha256:a572f1748eb5c0e8002dd0a83ee836ad9d755d035cbd5bfbdef5de810d2bea0b
+          value: ghcr.io/tektoncd/plumbing/tkn@sha256:233de6c8b8583a34c2379fa98d42dba739146c9336e8d41b66030484357481ed
         - name: METRICS_DOMAIN
           value: tekton.dev/operator
         - name: VERSION
@@ -70,6 +72,14 @@ spec:
             configMapKeyRef:
               name: tekton-config-defaults
               key: DEFAULT_TARGET_NAMESPACE
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - "ALL"
+          seccompProfile:
+            type: RuntimeDefault
       - name: tekton-operator-cluster-operations  # tektoninstallerset reconciler
         image: ko://github.com/tektoncd/operator/cmd/kubernetes/operator
         args:
@@ -79,6 +89,8 @@ spec:
         - "tekton-operator-cluster-operations"
         imagePullPolicy: Always
         env:
+          - name: KUBERNETES_MIN_VERSION
+            value: "v1.0.0"
           - name: SYSTEM_NAMESPACE
             valueFrom:
               fieldRef:
@@ -97,3 +109,11 @@ spec:
             value: tekton.dev/operator
           - name: CONFIG_LEADERELECTION_NAME
             value: tekton-operator-controller-config-leader-election
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - "ALL"
+          seccompProfile:
+            type: RuntimeDefault

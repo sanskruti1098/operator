@@ -55,6 +55,7 @@ type TektonHubTestSuite struct {
 	resourceNames      utils.ResourceNames
 	clients            *utils.Clients
 	deployments        []string
+	pvcs               []string
 	dbMigrationJobName string
 	interval           time.Duration
 	timeout            time.Duration
@@ -79,6 +80,9 @@ func NewTektonHubTestSuite(t *testing.T) *TektonHubTestSuite {
 			"tekton-hub-api",
 			"tekton-hub-ui",
 		},
+		pvcs: []string{
+			"tekton-hub-api",
+		},
 		dbMigrationJobName: "tekton-hub-db-migration",
 		interval:           5 * time.Second,
 		timeout:            5 * time.Minute,
@@ -94,6 +98,12 @@ func NewTektonHubTestSuite(t *testing.T) *TektonHubTestSuite {
 // before suite
 func (s *TektonHubTestSuite) SetupSuite() {
 	resources.PrintClusterInformation(s.logger, s.resourceNames)
+
+	// reset the tekton config into default state
+	s.logger.Debug("resetting TektonConfig to it's default state")
+	tcSuite := NewTestTektonConfigTestSuite(s.T())
+	tcSuite.recreateOperatorPod()
+	tcSuite.resetToDefaults()
 }
 
 // after suite
@@ -311,6 +321,16 @@ func (s *TektonHubTestSuite) undeploy(databaseNamespace string) {
 			continue
 		}
 		err := resources.WaitForDeploymentDeletion(s.clients.KubeClient, deploymentName, namespace, pollInterval, timeout)
+		require.NoError(t, err)
+	}
+	// verify pvcs are removed
+	for _, pvcName := range s.pvcs {
+		namespace := s.resourceNames.TargetNamespace
+		if databaseNamespace != "" {
+			// no need to verify external database removal
+			continue
+		}
+		err := resources.WaitForPVCDeletion(s.clients.KubeClient, pvcName, namespace, pollInterval, timeout)
 		require.NoError(t, err)
 	}
 	// verify migration job is removed

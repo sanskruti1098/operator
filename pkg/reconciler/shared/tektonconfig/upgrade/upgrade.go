@@ -32,13 +32,19 @@ import (
 var (
 	// pre upgrade functions
 	preUpgradeFunctions = []upgradeFunc{
-		upgradeChainProperties,      // upgrade #1: upgrade chain properties
-		resetTektonConfigConditions, // upgrade #2: removes conditions from TektonConfig CR, clears outdated conditions
+		resetTektonConfigConditions, // upgrade #1: removes conditions from TektonConfig CR, clears outdated conditions
+		upgradePipelineProperties,   // upgrade #2: update default value of enable-step-actions from false to true
+		// Todo: Remove the removeDeprecatedAddonParams upgrade function in next operator release
+		removeDeprecatedAddonParams,    // upgrade #3: remove the deprecated cluster task params from TektonConfig CR's addon params
+		copyResultConfigToTektonConfig, // upgrade #4: copy existing TektonResult configuration to the TektonConfig CR
 	}
 
 	// post upgrade functions
 	postUpgradeFunctions = []upgradeFunc{
-		upgradeStorageVersion, // upgrade #1: performs storage version migration
+		upgradeStorageVersion,                   // upgrade #1: performs storage version migration
+		removeClusterTaskInstallerSets,          // upgrade #2: removes the clusterTask installerset
+		removeVersionedTaskInstallerSets,        // upgrade #3: remove the older versioned resolver task installersets
+		removeVersionedStepActionsInstallerSets, // upgrade #4: remove the older versioned step action resolver installersets
 	}
 )
 

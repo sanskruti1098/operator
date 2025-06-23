@@ -40,8 +40,11 @@ It is recommended that you install OpenShiftPipelinesAsCode through [TektonConfi
         error-detection-simple-regexp: ^(?P<filename>[^:]*):(?P<line>[0-9]+):(?P<column>[0-9]+):([
           ]*)?(?P<error>.*)
         error-log-snippet: "true"
+        enable-cancel-in-progress-on-pull-requests: "false"
+        enable-cancel-in-progress-on-push: "false"
         hub-catalog-name: tekton
         hub-url: https://api.hub.tekton.dev/v1
+        skip-push-event-for-pr-commits: "true"
         remote-tasks: "true"
         secret-auto-create: "true"
         secret-github-app-token-scoped: "true"
@@ -71,7 +74,7 @@ them as per their need.
 
 Details of the field can be found in [OpenShift Pipelines As Code Settings][pac-config]
 
-#### Additional Pipelines As Controller (Optional)
+#### Additional Pipelines As Code Controller (Optional)
 
 If users want to deploy additional Pipelines As Code controller on their cluster along with default Pipelines As Code 
 controller then they need to provide the `additionalPACControllers` field in the `pipelinesAsCode` section.

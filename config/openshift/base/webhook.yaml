@@ -39,6 +39,8 @@ spec:
       - name: tekton-operator-webhook
         image: ko://github.com/tektoncd/operator/cmd/openshift/webhook
         env:
+        - name: KUBERNETES_MIN_VERSION
+          value: "v1.0.0"
         - name: SYSTEM_NAMESPACE
           valueFrom:
             fieldRef:
@@ -64,6 +66,9 @@ spec:
           containerPort: 8443
         securityContext:
           allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
           capabilities:
             drop:
-              - ALL
+            - "ALL"
+          seccompProfile:
+            type: RuntimeDefault

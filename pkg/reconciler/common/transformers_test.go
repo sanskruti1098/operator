@@ -18,8 +18,11 @@ package common
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"path"
+	"reflect"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -34,6 +37,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	apimachineryRuntime "k8s.io/apimachinery/pkg/runtime"
 	"knative.dev/pkg/ptr"
 )
 
@@ -115,9 +119,9 @@ func TestReplaceImages(t *testing.T) {
 		expected, _ := mf.ManifestFrom(mf.Recursive(testData))
 
 		manifest, err := mf.ManifestFrom(mf.Recursive(testData))
-		assertNoEror(t, err)
+		assertNoError(t, err)
 		newManifest, err := manifest.Transform(DeploymentImages(map[string]string{}))
-		assertNoEror(t, err)
+		assertNoError(t, err)
 
 		if d := cmp.Diff(expected.Resources(), newManifest.Resources()); d != "" {
 			t.Errorf("failed to update deployment %s", diff.PrintWantGot(d))
@@ -132,9 +136,9 @@ func TestReplaceImages(t *testing.T) {
 		testData := path.Join("testdata", "test-replace-image.yaml")
 
 		manifest, err := mf.ManifestFrom(mf.Recursive(testData))
-		assertNoEror(t, err)
+		assertNoError(t, err)
 		newManifest, err := manifest.Transform(DeploymentImages(images))
-		assertNoEror(t, err)
+		assertNoError(t, err)
 		assertDeployContainersHasImage(t, newManifest.Resources(), "controller-deployment", image)
 		assertDeployContainersHasImage(t, newManifest.Resources(), "sidecar", "busybox")
 	})
@@ -148,9 +152,9 @@ func TestReplaceImages(t *testing.T) {
 		testData := path.Join("testdata", "test-replace-image.yaml")
 
 		manifest, err := mf.ManifestFrom(mf.Recursive(testData))
-		assertNoEror(t, err)
+		assertNoError(t, err)
 		newManifest, err := manifest.Transform(DeploymentImages(images))
-		assertNoEror(t, err)
+		assertNoError(t, err)
 		assertDeployContainerArgsHasImage(t, newManifest.Resources(), "-bash", image)
 		assertDeployContainerArgsHasImage(t, newManifest.Resources(), "-git", "git")
 	})
@@ -164,9 +168,9 @@ func TestReplaceImages(t *testing.T) {
 		testData := path.Join("testdata", "test-replace-image.yaml")
 
 		manifest, err := mf.ManifestFrom(mf.Recursive(testData))
-		assertNoEror(t, err)
+		assertNoError(t, err)
 		newManifest, err := manifest.Transform(DeploymentImages(images))
-		assertNoEror(t, err)
+		assertNoError(t, err)
 		assertDeployContainerArgsHasImage(t, newManifest.Resources(), "-nop", image)
 		assertDeployContainerArgsHasImage(t, newManifest.Resources(), "-git", "git")
 	})
@@ -180,11 +184,26 @@ func TestReplaceImages(t *testing.T) {
 		testData := path.Join("testdata", "test-replace-addon-image.yaml")
 
 		manifest, err := mf.ManifestFrom(mf.Recursive(testData))
-		assertNoEror(t, err)
-		newManifest, err := manifest.Transform(TaskImages(images))
-		assertNoEror(t, err)
+		assertNoError(t, err)
+		newManifest, err := manifest.Transform(TaskImages(context.TODO(), images))
+		assertNoError(t, err)
 		assertTaskImage(t, newManifest.Resources(), "push", image)
 		assertTaskImage(t, newManifest.Resources(), "build", "$(inputs.params.BUILDER_IMAGE)")
+	})
+
+	t.Run("replace stepaction image", func(t *testing.T) {
+		stepActionName := "git_clone"
+		image := "foo.bar/image/git-clone"
+		images := map[string]string{
+			stepActionName: image,
+		}
+		testData := path.Join("testdata", "test-replace-stepaction-image.yaml")
+
+		manifest, err := mf.ManifestFrom(mf.Recursive(testData))
+		assertNoError(t, err)
+		newManifest, err := manifest.Transform(StepActionImages(context.TODO(), images))
+		assertNoError(t, err)
+		assertStepActionImage(t, newManifest.Resources(), "git-clone", image)
 	})
 
 	t.Run("replace containers by name", func(t *testing.T) {
@@ -195,9 +214,9 @@ func TestReplaceImages(t *testing.T) {
 		testData := path.Join("testdata", "test-replace-statefulset-image.yaml")
 
 		manifest, err := mf.ManifestFrom(mf.Recursive(testData))
-		assertNoEror(t, err)
+		assertNoError(t, err)
 		newManifest, err := manifest.Transform(StatefulSetImages(images))
-		assertNoEror(t, err)
+		assertNoError(t, err)
 		assertStatefulSetContainersHasImage(t, newManifest.Resources(), "controller-deployment", image)
 		assertStatefulSetContainersHasImage(t, newManifest.Resources(), "sidecar", "busybox")
 	})
@@ -211,15 +230,15 @@ func TestReplaceImages(t *testing.T) {
 		testData := path.Join("testdata", "test-replace-addon-image.yaml")
 
 		manifest, err := mf.ManifestFrom(mf.Recursive(testData))
-		assertNoEror(t, err)
-		newManifest, err := manifest.Transform(TaskImages(images))
-		assertNoEror(t, err)
+		assertNoError(t, err)
+		newManifest, err := manifest.Transform(TaskImages(context.TODO(), images))
+		assertNoError(t, err)
 		assertParamHasImage(t, newManifest.Resources(), "BUILDER_IMAGE", image)
 		assertTaskImage(t, newManifest.Resources(), "push", "buildah")
 	})
 }
 
-func assertNoEror(t *testing.T, err error) {
+func assertNoError(t *testing.T, err error) {
 	t.Helper()
 
 	if err != nil {
@@ -321,6 +340,43 @@ func assertParamHasImage(t *testing.T, resources []unstructured.Unstructured, na
 	}
 }
 
+func assertStepActionImage(t *testing.T, resources []unstructured.Unstructured, name string, image string) {
+	t.Helper()
+
+	for _, r := range resources {
+		stepActionData, found, err := unstructured.NestedFieldCopy(r.Object, "metadata", "name")
+		if err != nil {
+			t.Error(err)
+		}
+		if !found {
+			continue
+		}
+		stepActionName, ok := stepActionData.(string)
+		if !ok {
+			t.Errorf("assertion failed; name not found")
+			continue
+		}
+		if stepActionName != name {
+			t.Errorf("assertion failed; unexpected name: expected %s, got %s", name, stepActionData.(string))
+		}
+		stepActionImage, found, err := unstructured.NestedMap(r.Object, "spec")
+		if err != nil {
+			t.Errorf("assertion failed; %v", err)
+		}
+		if !found {
+			continue
+		}
+		i, ok := stepActionImage["image"]
+		if !ok {
+			t.Errorf("assertion failed; image not found")
+			continue
+		}
+		if i != image {
+			t.Errorf("assertion failed; unexpected image: expected %s, got %s", image, i)
+		}
+	}
+}
+
 func assertTaskImage(t *testing.T, resources []unstructured.Unstructured, name string, image string) {
 	t.Helper()
 
@@ -377,21 +433,21 @@ func statefulSetFor(t *testing.T, unstr unstructured.Unstructured) *appsv1.State
 func TestReplaceNamespaceInDeploymentEnv(t *testing.T) {
 	testData := path.Join("testdata", "test-replace-env-in-result-deployment.yaml")
 	manifest, err := mf.ManifestFrom(mf.Recursive(testData))
-	assertNoEror(t, err)
+	assertNoError(t, err)
 
-	manifest, err = manifest.Transform(ReplaceNamespaceInDeploymentEnv("openshift-pipelines"))
-	assertNoEror(t, err)
+	manifest, err = manifest.Transform(ReplaceNamespaceInDeploymentEnv([]string{"tekton-results-watcher", "tekton-results-api"}, "openshift-pipelines"))
+	assertNoError(t, err)
 
 	d := &appsv1.Deployment{}
 	err = runtime.DefaultUnstructuredConverter.FromUnstructured(manifest.Resources()[0].Object, d)
-	assertNoEror(t, err)
+	assertNoError(t, err)
 
 	env := d.Spec.Template.Spec.Containers[0].Env
 	assert.Equal(t, env[0].Value, "tcp")
 	assert.Equal(t, env[1].Value, "tekton-results-mysql.openshift-pipelines.svc.cluster.local")
 
 	err = runtime.DefaultUnstructuredConverter.FromUnstructured(manifest.Resources()[1].Object, d)
-	assertNoEror(t, err)
+	assertNoError(t, err)
 
 	env = d.Spec.Template.Spec.Containers[0].Env
 	assert.Equal(t, env[0].Value, "tcp")
@@ -401,14 +457,14 @@ func TestReplaceNamespaceInDeploymentEnv(t *testing.T) {
 func TestReplaceNamespaceInDeploymentArgs(t *testing.T) {
 	testData := path.Join("testdata", "test-replace-arg-in-result-deployment.yaml")
 	manifest, err := mf.ManifestFrom(mf.Recursive(testData))
-	assertNoEror(t, err)
+	assertNoError(t, err)
 
-	manifest, err = manifest.Transform(ReplaceNamespaceInDeploymentArgs("openshift-pipelines"))
-	assertNoEror(t, err)
+	manifest, err = manifest.Transform(ReplaceNamespaceInDeploymentArgs([]string{"tekton-results-watcher"}, "openshift-pipelines"))
+	assertNoError(t, err)
 
 	d := &appsv1.Deployment{}
 	err = runtime.DefaultUnstructuredConverter.FromUnstructured(manifest.Resources()[0].Object, d)
-	assertNoEror(t, err)
+	assertNoError(t, err)
 
 	args := d.Spec.Template.Spec.Containers[0].Args
 	assert.Equal(t, args[0], "-api_addr")
@@ -418,29 +474,29 @@ func TestReplaceNamespaceInDeploymentArgs(t *testing.T) {
 func TestReplaceNamespaceInClusterInterceptor(t *testing.T) {
 	testData := path.Join("testdata", "test-replace-namespace-in-cluster-interceptor.yaml")
 	manifest, err := mf.ManifestFrom(mf.Recursive(testData))
-	assertNoEror(t, err)
+	assertNoError(t, err)
 
 	manifest, err = manifest.Transform(injectNamespaceCRClusterInterceptorClientConfig("foobar"))
-	assertNoEror(t, err)
+	assertNoError(t, err)
 
 	clusterInterceptor := manifest.Resources()[0].Object
 	service, _, err := unstructured.NestedFieldNoCopy(clusterInterceptor, "spec", "clientConfig", "service")
 	m := service.(map[string]interface{})
-	assertNoEror(t, err)
+	assertNoError(t, err)
 	assert.Equal(t, "foobar", m["namespace"])
 }
 
 func TestReplaceNamespaceInClusterRole(t *testing.T) {
 	testData := path.Join("testdata", "test-replace-namespace-in-cluster-role.yaml")
 	manifest, err := mf.ManifestFrom(mf.Recursive(testData))
-	assertNoEror(t, err)
+	assertNoError(t, err)
 
 	manifest, err = manifest.Transform(injectNamespaceClusterRole("foobar"))
-	assertNoEror(t, err)
+	assertNoError(t, err)
 
 	clusterRole := manifest.Resources()[0].Object
 	rules, _, err := unstructured.NestedSlice(clusterRole, "rules")
-	assertNoEror(t, err)
+	assertNoError(t, err)
 	namespaceRule := rules[0].(map[string]interface{})
 	for _, name := range namespaceRule["resourceNames"].([]interface{}) {
 		if name.(string) != "foobar" {
@@ -459,22 +515,20 @@ func TestAddConfigMapValues_PipelineProperties(t *testing.T) {
 
 	testData := path.Join("testdata", "test-replace-cm-values.yaml")
 	manifest, err := mf.ManifestFrom(mf.Recursive(testData))
-	assertNoEror(t, err)
+	assertNoError(t, err)
 
 	prop := v1alpha1.PipelineProperties{
-		EnableTektonOciBundles: ptr.Bool(true),
-		EnableApiFields:        "stable",
+		EnableApiFields: "stable",
 	}
 
 	manifest, err = manifest.Transform(AddConfigMapValues("test1", prop))
-	assertNoEror(t, err)
+	assertNoError(t, err)
 
 	cm := &corev1.ConfigMap{}
 	err = runtime.DefaultUnstructuredConverter.FromUnstructured(manifest.Resources()[0].Object, cm)
-	assertNoEror(t, err)
+	assertNoError(t, err)
 
 	assert.Equal(t, cm.Data["foo"], "bar")
-	assert.Equal(t, cm.Data["enable-tekton-oci-bundles"], "true")
 	assert.Equal(t, cm.Data["enable-api-fields"], "stable")
 }
 
@@ -482,7 +536,7 @@ func TestAddConfigMapValues_OptionalPipelineProperties(t *testing.T) {
 
 	testData := path.Join("testdata", "test-replace-cm-values.yaml")
 	manifest, err := mf.ManifestFrom(mf.Recursive(testData))
-	assertNoEror(t, err)
+	assertNoError(t, err)
 
 	min := uint(120)
 	prop := v1alpha1.OptionalPipelineProperties{
@@ -492,11 +546,11 @@ func TestAddConfigMapValues_OptionalPipelineProperties(t *testing.T) {
 	}
 
 	manifest, err = manifest.Transform(AddConfigMapValues("test2", prop))
-	assertNoEror(t, err)
+	assertNoError(t, err)
 
 	cm := &corev1.ConfigMap{}
 	err = runtime.DefaultUnstructuredConverter.FromUnstructured(manifest.Resources()[1].Object, cm)
-	assertNoEror(t, err)
+	assertNoError(t, err)
 	// ConfigMap will have only fields which are defined in `prop` OptionalPipelineProperties above
 	assert.Equal(t, cm.Data["default-cloud-events-sink"], "abc")
 	assert.Equal(t, cm.Data["default-timeout-minutes"], "120")
@@ -743,9 +797,9 @@ func TestInjectLabelOnNamespace(t *testing.T) {
 		testData := path.Join("testdata", "test-namespace-inject.yaml")
 
 		manifest, err := mf.ManifestFrom(mf.Recursive(testData))
-		assertNoEror(t, err)
+		assertNoError(t, err)
 		newManifest, err := manifest.Transform(InjectLabelOnNamespace("operator.tekton.dev/disable-proxy=true"))
-		assertNoEror(t, err)
+		assertNoError(t, err)
 		for _, resource := range newManifest.Resources() {
 			labels := resource.GetLabels()
 			value, ok := labels["operator.tekton.dev/disable-proxy"]
@@ -764,7 +818,7 @@ func TestAddConfiguration(t *testing.T) {
 
 	testData := path.Join("testdata", "test-add-configurations.yaml")
 	manifest, err := mf.ManifestFrom(mf.Recursive(testData))
-	assertNoEror(t, err)
+	assertNoError(t, err)
 
 	config := v1alpha1.Config{
 		NodeSelector: map[string]string{
@@ -782,11 +836,11 @@ func TestAddConfiguration(t *testing.T) {
 	}
 
 	manifest, err = manifest.Transform(AddConfiguration(config))
-	assertNoEror(t, err)
+	assertNoError(t, err)
 
 	d := &v1beta1.Deployment{}
 	err = runtime.DefaultUnstructuredConverter.FromUnstructured(manifest.Resources()[0].Object, d)
-	assertNoEror(t, err)
+	assertNoError(t, err)
 	assert.Equal(t, d.Spec.Template.Spec.NodeSelector["foo"], config.NodeSelector["foo"])
 	assert.Equal(t, d.Spec.Template.Spec.Tolerations[0].Key, config.Tolerations[0].Key)
 	assert.Equal(t, d.Spec.Template.Spec.PriorityClassName, config.PriorityClassName)
@@ -853,7 +907,7 @@ func TestAddStatefulSetPSA(t *testing.T) {
 func TestCopyConfigMapValues(t *testing.T) {
 	testData := path.Join("testdata", "test-resolver-config.yaml")
 	manifest, err := mf.ManifestFrom(mf.Recursive(testData))
-	assertNoEror(t, err)
+	assertNoError(t, err)
 
 	expectedValues := map[string]string{
 		"default-tekton-hub-catalog":        "abc-catalog",
@@ -862,11 +916,11 @@ func TestCopyConfigMapValues(t *testing.T) {
 	}
 
 	manifest, err = manifest.Transform(CopyConfigMap("hubresolver-config", expectedValues))
-	assertNoEror(t, err)
+	assertNoError(t, err)
 
 	cm := &corev1.ConfigMap{}
 	err = runtime.DefaultUnstructuredConverter.FromUnstructured(manifest.Resources()[0].Object, cm)
-	assertNoEror(t, err)
+	assertNoError(t, err)
 	// ConfigMap will have values changed only for field which are defined
 	assert.Equal(t, cm.Data["default-tekton-hub-catalog"], "abc-catalog")
 	assert.Equal(t, cm.Data["default-artifact-hub-task-catalog"], "some-random-catalog")
@@ -883,7 +937,7 @@ func TestCopyConfigMapValues(t *testing.T) {
 func TestCopyEmptyConfigMapValues(t *testing.T) {
 	testData := path.Join("testdata", "test-empty-config.yaml")
 	manifest, err := mf.ManifestFrom(mf.Recursive(testData))
-	assertNoEror(t, err)
+	assertNoError(t, err)
 
 	expectedValues := map[string]string{
 		"default-tekton-hub-catalog":        "abc-catalog",
@@ -892,11 +946,11 @@ func TestCopyEmptyConfigMapValues(t *testing.T) {
 	}
 
 	manifest, err = manifest.Transform(CopyConfigMap("empty-config", expectedValues))
-	assertNoEror(t, err)
+	assertNoError(t, err)
 
 	cm := &corev1.ConfigMap{}
 	err = runtime.DefaultUnstructuredConverter.FromUnstructured(manifest.Resources()[0].Object, cm)
-	assertNoEror(t, err)
+	assertNoError(t, err)
 	// ConfigMap will have all expected values
 	assert.Equal(t, cm.Data["default-tekton-hub-catalog"], "abc-catalog")
 	assert.Equal(t, cm.Data["default-artifact-hub-task-catalog"], "some-random-catalog")
@@ -906,31 +960,31 @@ func TestCopyEmptyConfigMapValues(t *testing.T) {
 func TestCopyConfigMapWithEmptyExpectedValues(t *testing.T) {
 	testData := path.Join("testdata", "test-empty-config.yaml")
 	manifest, err := mf.ManifestFrom(mf.Recursive(testData))
-	assertNoEror(t, err)
+	assertNoError(t, err)
 
 	expectedValues := map[string]string{}
 
 	manifest, err = manifest.Transform(CopyConfigMap("empty-config", expectedValues))
-	assertNoEror(t, err)
+	assertNoError(t, err)
 
 	cm := &corev1.ConfigMap{}
 	err = runtime.DefaultUnstructuredConverter.FromUnstructured(manifest.Resources()[0].Object, cm)
-	assertNoEror(t, err)
+	assertNoError(t, err)
 }
 
 func TestCopyConfigMapWithWrongKind(t *testing.T) {
 	testData := path.Join("testdata", "test-namespace-inject.yaml")
 	manifest, err := mf.ManifestFrom(mf.Recursive(testData))
-	assertNoEror(t, err)
+	assertNoError(t, err)
 
 	expectedValues := map[string]string{}
 
 	manifest, err = manifest.Transform(CopyConfigMap("tekton-pipelines", expectedValues))
-	assertNoEror(t, err)
+	assertNoError(t, err)
 
 	cm := &corev1.ConfigMap{}
 	err = runtime.DefaultUnstructuredConverter.FromUnstructured(manifest.Resources()[0].Object, cm)
-	assertNoEror(t, err)
+	assertNoError(t, err)
 }
 
 func TestReplaceDeploymentArg(t *testing.T) {
@@ -965,11 +1019,11 @@ func TestReplaceDeploymentArg(t *testing.T) {
 func TestReplaceNamespaceInServiceAccount(t *testing.T) {
 	testData := path.Join("testdata", "test-replace-namespace-in-service-account.yaml")
 	manifest, err := mf.ManifestFrom(mf.Recursive(testData))
-	assertNoEror(t, err)
+	assertNoError(t, err)
 
 	targetNamespace := "foobar"
 	manifest, err = manifest.Transform(ReplaceNamespaceInServiceAccount(targetNamespace))
-	assertNoEror(t, err)
+	assertNoError(t, err)
 
 	for _, resource := range manifest.Resources() {
 		if resource.GetNamespace() != targetNamespace {
@@ -981,16 +1035,16 @@ func TestReplaceNamespaceInServiceAccount(t *testing.T) {
 func TestReplaceNamespaceInClusterRoleBinding(t *testing.T) {
 	testData := path.Join("testdata", "test-replace-namespace-in-cluster-role-binding.yaml")
 	manifest, err := mf.ManifestFrom(mf.Recursive(testData))
-	assertNoEror(t, err)
+	assertNoError(t, err)
 
 	targetNamespace := "foobar"
 	manifest, err = manifest.Transform(ReplaceNamespaceInClusterRoleBinding(targetNamespace))
-	assertNoEror(t, err)
+	assertNoError(t, err)
 
 	for _, resource := range manifest.Resources() {
 		crb := &rbacv1.ClusterRoleBinding{}
 		err = runtime.DefaultUnstructuredConverter.FromUnstructured(resource.Object, crb)
-		assertNoEror(t, err)
+		assertNoError(t, err)
 
 		for _, subject := range crb.Subjects {
 			if subject.Namespace != targetNamespace {
@@ -1097,4 +1151,237 @@ func TestReplaceNamespace(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestAddSecretData(t *testing.T) {
+	tests := []struct {
+		name        string
+		inputObj    *unstructured.Unstructured
+		inputData   map[string][]byte
+		inputAnnot  map[string]string
+		expectedObj *unstructured.Unstructured
+		expectError bool
+	}{
+		{
+			name: "Add data to empty Secret",
+			inputObj: &unstructured.Unstructured{
+				Object: map[string]interface{}{
+					"apiVersion": "v1",
+					"kind":       "Secret",
+					"metadata":   map[string]interface{}{},
+				},
+			},
+			inputData:  map[string][]byte{"key": []byte("value")},
+			inputAnnot: map[string]string{"anno": "value"},
+			expectedObj: &unstructured.Unstructured{
+				Object: map[string]interface{}{
+					"apiVersion": "v1",
+					"kind":       "Secret",
+					"metadata": map[string]interface{}{
+						"annotations": map[string]interface{}{
+							"anno": "value",
+						},
+					},
+					"data": map[string]interface{}{
+						"key": base64.StdEncoding.EncodeToString([]byte("value")),
+					},
+				},
+			},
+			expectError: false,
+		},
+		{
+			name: "Do not overwrite existing data",
+			inputObj: &unstructured.Unstructured{
+				Object: map[string]interface{}{
+					"apiVersion": "v1",
+					"kind":       "Secret",
+					"metadata":   map[string]interface{}{},
+					"data": map[string]interface{}{
+						"existingKey": []byte("existingValue"),
+					},
+				},
+			},
+			inputData:  map[string][]byte{"newKey": []byte("newValue")},
+			inputAnnot: map[string]string{"anno": "value"},
+			expectedObj: &unstructured.Unstructured{
+				Object: map[string]interface{}{
+					"apiVersion": "v1",
+					"kind":       "Secret",
+					"metadata": map[string]interface{}{
+						"annotations": map[string]interface{}{
+							"anno": "value",
+						},
+					},
+					"data": map[string]interface{}{
+						"existingKey": base64.StdEncoding.EncodeToString([]byte("existingValue")),
+					},
+				},
+			},
+			expectError: false,
+		},
+		{
+			name: "Non-Secret resource",
+			inputObj: &unstructured.Unstructured{
+				Object: map[string]interface{}{
+					"apiVersion": "v1",
+					"kind":       "ConfigMap",
+					"metadata":   map[string]interface{}{},
+				},
+			},
+			inputData:  map[string][]byte{"key": []byte("value")},
+			inputAnnot: map[string]string{"anno": "value"},
+			expectedObj: &unstructured.Unstructured{
+				Object: map[string]interface{}{
+					"apiVersion": "v1",
+					"kind":       "ConfigMap",
+					"metadata":   map[string]interface{}{},
+				},
+			},
+			expectError: false,
+		},
+		{
+			name: "Empty input data",
+			inputObj: &unstructured.Unstructured{
+				Object: map[string]interface{}{
+					"apiVersion": "v1",
+					"kind":       "Secret",
+					"metadata":   map[string]interface{}{},
+				},
+			},
+			inputData:  map[string][]byte{},
+			inputAnnot: map[string]string{"anno": "value"},
+			expectedObj: &unstructured.Unstructured{
+				Object: map[string]interface{}{
+					"apiVersion": "v1",
+					"kind":       "Secret",
+					"metadata":   map[string]interface{}{},
+				},
+			},
+			expectError: false,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := AddSecretData(test.inputData, test.inputAnnot)(test.inputObj)
+
+			if test.expectError {
+				t.Errorf("Error %v", err)
+			} else {
+				assertNoError(t, err)
+				// Remove creationTimestamp from both expected and actual objects
+				if metadata, ok := test.expectedObj.Object["metadata"].(map[string]interface{}); ok {
+					delete(metadata, "creationTimestamp")
+				}
+				if metadata, ok := test.inputObj.Object["metadata"].(map[string]interface{}); ok {
+					delete(metadata, "creationTimestamp")
+				}
+
+				if diff := cmp.Diff(test.expectedObj.Object, test.inputObj.Object); diff != "" {
+					t.Errorf("Objects do not match (-expected +actual):\n%s", diff)
+				}
+			}
+		})
+	}
+}
+
+func TestUpdatePerformanceFlagsInDeploymentAndLeaderConfigMap(t *testing.T) {
+	leaderElectionPipelineConfig := "config-leader-election-controller"
+	pipelinesControllerDeployment := "tekton-pipelines-controller"
+	pipelinesControllerContainer := "tekton-pipelines-controller"
+	pipelineCR := &v1alpha1.TektonPipeline{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "pipeline",
+			Namespace: "xyz",
+		},
+	}
+	buckets := uint(2)
+	workers := int(3)
+	burst := int(33)
+	pipelineCR.Spec.Performance.Buckets = &buckets
+	pipelineCR.Spec.Performance.DisableHA = true
+	pipelineCR.Spec.Performance.KubeApiQPS = ptr.Float32(40.03)
+	pipelineCR.Spec.Performance.KubeApiBurst = &burst
+	pipelineCR.Spec.Performance.ThreadsPerController = &workers
+
+	depInput := &appsv1.Deployment{
+		TypeMeta: metav1.TypeMeta{
+			Kind: "Deployment",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      pipelinesControllerDeployment,
+			Namespace: "xyz",
+		},
+		Spec: appsv1.DeploymentSpec{
+			Replicas: ptr.Int32(1),
+			Selector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{"app": "hello"},
+			},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{"app": "hello"},
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name:  "hello",
+							Image: "xyz",
+						},
+						{
+							Name:  pipelinesControllerContainer,
+							Image: "xyz",
+							Args:  []string{"-flag1", "v1", "-flag2", "v2", "-disable-ha"},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	depExpected := depInput.DeepCopy()
+	depExpected.Spec.Template.Labels = map[string]string{
+		"app": "hello",
+		"config-leader-election-controller.data.buckets": "2",
+		"deployment.spec.replicas":                       "1",
+	}
+
+	depExpected.Spec.Template.Spec.Containers[1].Args = []string{
+		"-flag1", "v1",
+		"-flag2", "v2",
+		"-disable-ha=true",
+		"-kube-api-burst=33",
+		"-kube-api-qps=40.03",
+		"-threads-per-controller=3",
+	}
+
+	jsonBytes, err := json.Marshal(&depInput)
+	assert.NilError(t, err)
+	ud := &unstructured.Unstructured{}
+	err = json.Unmarshal(jsonBytes, ud)
+	assert.NilError(t, err)
+
+	transformer := UpdatePerformanceFlagsInDeploymentAndLeaderConfigMap(&pipelineCR.Spec.Performance, leaderElectionPipelineConfig, pipelinesControllerDeployment, pipelinesControllerContainer)
+	err = transformer(ud)
+	assert.NilError(t, err)
+
+	outDep := &appsv1.Deployment{}
+	err = apimachineryRuntime.DefaultUnstructuredConverter.FromUnstructured(ud.Object, outDep)
+	assert.NilError(t, err)
+
+	assert.Equal(t, true, reflect.DeepEqual(outDep, depExpected), fmt.Sprintf("transformed output:[%+v], expected:[%+v]", outDep, depExpected))
+}
+
+func TestGetSortedKeys(t *testing.T) {
+	in := map[string]interface{}{
+		"a1":  1,
+		"z1":  false,
+		"a2":  2,
+		"a3":  3,
+		"a10": 10,
+		"a11": 11,
+	}
+	expectedOut := []string{"a1", "a10", "a11", "a2", "a3", "z1"}
+
+	out := getSortedKeys(in)
+	assert.Equal(t, true, reflect.DeepEqual(out, expectedOut))
 }

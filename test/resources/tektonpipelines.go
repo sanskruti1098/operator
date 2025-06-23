@@ -109,7 +109,10 @@ func TektonPipelineCRDelete(t *testing.T, clients *utils.Clients, crNames utils.
 	if err != nil {
 		t.Fatal("Timed out waiting on TektonPipeline to delete", err)
 	}
-	_, b, _, _ := runtime.Caller(0)
+	_, b, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("Failed to get caller information")
+	}
 	m, err := mfc.NewManifest(filepath.Join((filepath.Dir(b)+"/.."), "manifests/"), clients.Config)
 	if err != nil {
 		t.Fatal("Failed to load manifest", err)
@@ -141,4 +144,38 @@ func verifyNoTektonPipelineCR(clients *utils.Clients) error {
 		return errors.New("Unable to verify cluster-scoped resources are deleted if any TektonPipeline exists")
 	}
 	return nil
+}
+
+// EnsureTektonPipelineWithStatefulsetExists creates a TektonPipeline with the name names.TektonPipeline, if it does not exist.
+func EnsureTektonPipelineWithStatefulsetExists(clients pipelinev1alpha1.TektonPipelineInterface, names utils.ResourceNames) (*v1alpha1.TektonPipeline, error) {
+	// If this function is called by the upgrade tests, we only create the custom resource if it does not exist.
+	tpCR, err := clients.Get(context.TODO(), names.TektonPipeline, metav1.GetOptions{})
+	if err == nil {
+		return tpCR, err
+	}
+	if apierrs.IsNotFound(err) {
+		statefulsetOrdinals := true
+
+		tpCR = &v1alpha1.TektonPipeline{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: names.TektonPipeline,
+			},
+			Spec: v1alpha1.TektonPipelineSpec{
+				CommonSpec: v1alpha1.CommonSpec{
+					TargetNamespace: names.TargetNamespace,
+				},
+				Pipeline: v1alpha1.Pipeline{
+					PipelineProperties: v1alpha1.PipelineProperties{
+						Performance: v1alpha1.PerformanceProperties{
+							PerformanceStatefulsetOrdinalsConfig: v1alpha1.PerformanceStatefulsetOrdinalsConfig{
+								StatefulsetOrdinals: &statefulsetOrdinals,
+							},
+						},
+					},
+				},
+			},
+		}
+		return clients.Create(context.TODO(), tpCR, metav1.CreateOptions{})
+	}
+	return tpCR, err
 }

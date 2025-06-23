@@ -100,7 +100,10 @@ type TaskSpec struct {
 
 	// Volumes is a collection of volumes that are available to mount into the
 	// steps of the build.
+	// See Pod.spec.volumes (API version: v1)
 	// +listType=atomic
+	// +kubebuilder:pruning:PreserveUnknownFields
+	// +kubebuilder:validation:Schemaless
 	Volumes []corev1.Volume `json:"volumes,omitempty"`
 
 	// StepTemplate can be used as the basis for all step containers within the
@@ -129,3 +132,9 @@ type TaskList struct {
 	metav1.ListMeta `json:"metadata,omitempty"`
 	Items           []Task `json:"items"`
 }
+
+// StepList is a list of Steps
+type StepList []Step
+
+// SidecarList is a list of Sidecars
+type SidecarList []Sidecar

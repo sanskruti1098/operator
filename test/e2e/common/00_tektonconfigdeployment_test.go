@@ -349,8 +349,7 @@ func (s *TektonConfigTestSuite) Test05_DisableAndEnableAddons() {
 	// disable addons and update
 	tc := s.getCurrentConfig(timeout)
 	tc.Spec.Addon.Params = []v1alpha1.Param{
-		{Name: v1alpha1.ClusterTasksParam, Value: "false"},
-		{Name: v1alpha1.CommunityClusterTasks, Value: "false"},
+		{Name: v1alpha1.CommunityResolverTasks, Value: "false"},
 		{Name: v1alpha1.PipelineTemplatesParam, Value: "false"},
 	}
 	_, err := s.clients.TektonConfig().Update(context.TODO(), tc, metav1.UpdateOptions{})
@@ -1060,6 +1059,10 @@ func (s *TektonConfigTestSuite) getDefaultConfig() *v1alpha1.TektonConfig {
 				Keep:      &pruneKeep,
 				KeepSince: nil,
 				Schedule:  "0 8 * * *",
+			},
+			// Disable the TektonPruner by default
+			TektonPruner: v1alpha1.Pruner{
+				Disabled: &v1alpha1.DefaultPrunerDisabled,
 			},
 		},
 	}

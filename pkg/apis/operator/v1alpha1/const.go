@@ -33,10 +33,10 @@ const (
 	ProfileLite  = "lite"
 
 	// Addon Params
-	ClusterTasksParam      = "clusterTasks"
+	CommunityResolverTasks = "communityResolverTasks"
 	PipelineTemplatesParam = "pipelineTemplates"
-	CommunityClusterTasks  = "communityClusterTasks"
 	ResolverTasks          = "resolverTasks"
+	ResolverStepActions    = "resolverStepActions"
 
 	// Hub Params
 	EnableDevconsoleIntegrationParam = "enable-devconsole-integration"
@@ -48,6 +48,7 @@ const (
 	ReleaseMinorVersionKey          = "operator.tekton.dev/release-minor-version"
 	TargetNamespaceKey              = "operator.tekton.dev/target-namespace"
 	InstallerSetType                = "operator.tekton.dev/type"
+	InstallerSetInstallType         = "operator.tekton.dev/installType"
 	LabelOperandName                = "operator.tekton.dev/operand-name"
 	DbSecretHash                    = "operator.tekton.dev/db-secret-hash"
 	DeploymentSpecHashValueLabelKey = "operator.tekton.dev/deployment-spec-applied-hash" // used to recreate pods, if there is a change detected in deployments spec
@@ -68,6 +69,9 @@ const (
 	// PipelinesSCC will be changed to `restricted` or `restricted-v2` once
 	// `pipelines-scc` is deprecated
 	PipelinesSCC = "pipelines-scc"
+
+	// Maximum number of allowed buckets
+	MaxBuckets = 10
 )
 
 var (
@@ -110,10 +114,10 @@ var (
 	}
 
 	AddonParams = map[string]ParamValue{
-		ClusterTasksParam:      defaultParamValue,
+		CommunityResolverTasks: defaultParamValue,
 		PipelineTemplatesParam: defaultParamValue,
-		CommunityClusterTasks:  defaultParamValue,
 		ResolverTasks:          defaultParamValue,
+		ResolverStepActions:    defaultParamValue,
 	}
 
 	HubParams = map[string]ParamValue{
@@ -121,7 +125,7 @@ var (
 	}
 )
 
-var (
+const (
 	ConfigResourceName           = "config"
 	PipelineResourceName         = "pipeline"
 	OperandTektoncdPipeline      = "tektoncd-pipelines"
@@ -139,4 +143,5 @@ var (
 	OpenShiftPipelinesAsCodeName = "pipelines-as-code"
 	ManualApprovalGates          = "manual-approval-gate"
 	PrunerResourceName           = "tektoncd-pruner"
+	TektonPrunerResourceName     = "pruner"
 )

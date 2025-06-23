@@ -12,10 +12,11 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"testing"
 	"time"
 
 	"github.com/buildkite/agent/v3/version"
-	"golang.org/x/crypto/ssh/terminal"
+	"golang.org/x/term"
 )
 
 const (
@@ -231,11 +232,7 @@ func ColorsSupported() bool {
 	}
 
 	// Colors can only be shown if STDOUT is a terminal
-	if terminal.IsTerminal(int(os.Stdout.Fd())) {
-		return true
-	}
-
-	return false
+	return term.IsTerminal(int(os.Stdout.Fd()))
 }
 
 type JSONPrinter struct {
@@ -269,4 +266,19 @@ var Discard = &ConsoleLogger{
 	printer: &TextPrinter{
 		Writer: io.Discard,
 	},
+}
+
+// TestPrinter is a log printer than calls the Logf method of a [testing.T]
+// or [testing.B].
+type TestPrinter struct {
+	tb testing.TB
+}
+
+func NewTestPrinter(tb testing.TB) TestPrinter {
+	return TestPrinter{tb: tb}
+}
+
+func (tp TestPrinter) Print(level Level, msg string, fields Fields) {
+	now := time.Now().Format(DateFormat)
+	tp.tb.Logf("%s %s %s %v", now, level, msg, fields)
 }

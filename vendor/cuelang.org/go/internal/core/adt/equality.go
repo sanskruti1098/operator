@@ -24,7 +24,11 @@ const (
 	// CheckStructural indicates that closedness information should be
 	// considered for equality. Equal may return false even when values are
 	// equal.
-	CheckStructural Flag = 1 << iota
+	CheckStructural
+
+	// RegularOnly indicates that only regular fields should be considered,
+	// thus excluding hidden and definition fields.
+	RegularOnly
 )
 
 func Equal(ctx *OpContext, v, w Value, flags Flag) bool {
@@ -42,12 +46,24 @@ func equalVertex(ctx *OpContext, x *Vertex, v Value, flags Flag) bool {
 	if !ok {
 		return false
 	}
-	if x == y {
-		return true
-	}
+
+	// Note that the arc type of an originating node may be different than
+	// the one we are sharing. So do this check before dereferencing.
+	// For instance:
+	//
+	//    a?: #B  // ArcOptional
+	//    #B: {}  // ArcMember
 	if x.ArcType != y.ArcType {
 		return false
 	}
+
+	x = x.DerefValue()
+	y = y.DerefValue()
+
+	if x == y {
+		return true
+	}
+
 	xk := x.Kind()
 	yk := y.Kind()
 
@@ -67,14 +83,19 @@ func equalVertex(ctx *OpContext, x *Vertex, v Value, flags Flag) bool {
 		if x.IsClosedStruct() != y.IsClosedStruct() {
 			return false
 		}
+		if x.IsClosedList() != y.IsClosedList() {
+			return false
+		}
 		if !equalClosed(ctx, x, y, flags) {
 			return false
 		}
 	}
 
+	skipRegular := flags&RegularOnly != 0
+
 loop1:
 	for _, a := range x.Arcs {
-		if a.ArcType > maxArcType {
+		if (skipRegular && !a.Label.IsRegular()) || a.ArcType > maxArcType {
 			continue
 		}
 		for _, b := range y.Arcs {
@@ -90,7 +111,7 @@ loop1:
 
 loop2:
 	for _, b := range y.Arcs {
-		if b.ArcType > maxArcType {
+		if (skipRegular && !b.Label.IsRegular()) || b.ArcType > maxArcType {
 			continue
 		}
 		for _, a := range x.Arcs {
@@ -159,6 +180,10 @@ func equalTerminal(ctx *OpContext, v, w Value, flags Flag) bool {
 	case *Bottom:
 		// All errors are logically the same.
 		_, ok := w.(*Bottom)
+		return ok
+
+	case *Top:
+		_, ok := w.(*Top)
 		return ok
 
 	case *Num, *String, *Bool, *Bytes, *Null:

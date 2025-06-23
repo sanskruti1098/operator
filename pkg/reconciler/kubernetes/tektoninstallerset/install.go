@@ -55,6 +55,7 @@ type installer struct {
 	namespaceScoped []unstructured.Unstructured
 	deployment      []unstructured.Unstructured
 	statefulset     []unstructured.Unstructured
+	job             []unstructured.Unstructured
 }
 
 func NewInstaller(manifest *mf.Manifest, mfClient mf.Client, kubeClientSet kubernetes.Interface, logger *zap.SugaredLogger) *installer {
@@ -68,6 +69,7 @@ func NewInstaller(manifest *mf.Manifest, mfClient mf.Client, kubeClientSet kuber
 		namespaceScoped: []unstructured.Unstructured{},
 		deployment:      []unstructured.Unstructured{},
 		statefulset:     []unstructured.Unstructured{},
+		job:             []unstructured.Unstructured{},
 	}
 
 	// we filter out resource as some resources are dependent on others
@@ -83,6 +85,9 @@ func NewInstaller(manifest *mf.Manifest, mfClient mf.Client, kubeClientSet kuber
 			continue
 		} else if res.GetKind() == "StatefulSet" {
 			installer.statefulset = append(installer.statefulset, res)
+			continue
+		} else if res.GetKind() == "Job" {
+			installer.job = append(installer.job, res)
 			continue
 		}
 		if isClusterScoped(res.GetKind()) && strings.ToLower(res.GetKind()) != "clusterrolebinding" {
@@ -123,17 +128,22 @@ func isClusterScoped(kind string) bool {
 
 func (i *installer) ensureResources(resources []unstructured.Unstructured) error {
 	for _, r := range resources {
+		ressourceLogger := i.logger.With(
+			"kind", r.GetKind(),
+			"namespace", r.GetNamespace(),
+			"name", r.GetName(),
+		)
 		expectedHash, err := hash.Compute(r.Object)
 		if err != nil {
+			ressourceLogger.Error("failed to compute resource hash", "error", err)
 			return err
 		}
-
-		i.logger.Infof("fetching resource %s: %s/%s", r.GetKind(), r.GetNamespace(), r.GetName())
+		ressourceLogger.Debug("fetching resource")
 
 		res, err := i.mfClient.Get(&r)
 		if err != nil {
 			if apierrs.IsNotFound(err) {
-				i.logger.Infof("resource not found, creating %s: %s/%s", r.GetKind(), r.GetNamespace(), r.GetName())
+				ressourceLogger.Info("creating new resource")
 				// add hash on the resource of expected manifest and create
 				anno := r.GetAnnotations()
 				if anno == nil {
@@ -143,30 +153,35 @@ func (i *installer) ensureResources(resources []unstructured.Unstructured) error
 				r.SetAnnotations(anno)
 				err = i.mfClient.Create(&r)
 				if err != nil {
+					ressourceLogger.Error("failed to create resource", "error", err)
 					return err
 				}
+				ressourceLogger.Info("resource created successfully")
 				continue
 			}
+			ressourceLogger.Error("failed to get resource", "error", err)
 			return err
 		}
 
 		if res.GetDeletionTimestamp() != nil {
-			i.logger.Debugf("waiting for resource %s: %s/%s to be deleted",
-				r.GetKind(), r.GetNamespace(), r.GetName())
+			ressourceLogger.Debug("resource is being deleted, will reconcile again")
 			return v1alpha1.RECONCILE_AGAIN_ERR
 		}
 
-		i.logger.Infof("found resource %s: %s/%s, checking for update!", r.GetKind(), r.GetNamespace(), r.GetName())
+		ressourceLogger.Debug("resource exists, checking for updates")
 
 		// if resource exist then check if expected hash is different from the one
 		// on the resource
 		hashOnResource := res.GetAnnotations()[v1alpha1.LastAppliedHashKey]
 
 		if expectedHash == hashOnResource {
+			ressourceLogger.Debug("resource is up-to-date, no changes needed")
 			continue
 		}
 
-		i.logger.Infof("updating resource %s: %s/%s", r.GetKind(), r.GetNamespace(), r.GetName())
+		ressourceLogger.Info("resource needs update",
+			"currentHash", hashOnResource,
+			"expectedHash", expectedHash)
 
 		anno := r.GetAnnotations()
 		if anno == nil {
@@ -177,11 +192,14 @@ func (i *installer) ensureResources(resources []unstructured.Unstructured) error
 
 		installManifests, err := mf.ManifestFrom(mf.Slice([]unstructured.Unstructured{r}), mf.UseClient(i.mfClient))
 		if err != nil {
+			ressourceLogger.Error("failed to create manifest", "error", err)
 			return err
 		}
 		if err := installManifests.Apply(); err != nil {
+			ressourceLogger.Error("failed to apply manifest", "error", err)
 			return err
 		}
+		ressourceLogger.Info("resource updated successfully")
 	}
 	return nil
 }
@@ -219,6 +237,10 @@ func (i *installer) EnsureDeploymentResources(ctx context.Context) error {
 	return nil
 }
 
+func (i *installer) EnsureJobResources() error {
+	return i.ensureResources(i.job)
+}
+
 // list of fields should be reconciled
 func (i *installer) resourceReconcileFields(u *unstructured.Unstructured) []string {
 	switch u.GetKind() {
@@ -238,11 +260,12 @@ func (i *installer) resourceReconcileFields(u *unstructured.Unstructured) []stri
 // currently tested with deployments and StatefulSet
 // TODO: (jkandasa) needs to be tested with other resources too
 func (i *installer) ensureResource(ctx context.Context, expected *unstructured.Unstructured) error {
-	i.logger.Debugw("verifying a resource",
+	loggerWithContext := i.logger.With(
 		"name", expected.GetName(),
 		"namespace", expected.GetNamespace(),
 		"kind", expected.GetKind(),
 	)
+	loggerWithContext.Debug("verifying a resource")
 
 	// update specific things to deployments and statefulSets
 	if expected.GetKind() == "Deployment" || expected.GetKind() == "StatefulSet" {
@@ -250,12 +273,7 @@ func (i *installer) ensureResource(ctx context.Context, expected *unstructured.U
 		// update proxy settings
 		err := common.ApplyProxySettings(expected)
 		if err != nil {
-			i.logger.Errorw("error on applying proxy settings",
-				"name", expected.GetName(),
-				"namespace", expected.GetNamespace(),
-				"kind", expected.GetKind(),
-				err,
-			)
+			loggerWithContext.Errorw("failed to apply proxy settings", "error", err)
 			return err
 		}
 
@@ -265,7 +283,7 @@ func (i *installer) ensureResource(ctx context.Context, expected *unstructured.U
 		// lists the available HPAs
 		hpaList, err := i.kubeClientSet.AutoscalingV2().HorizontalPodAutoscalers(expected.GetNamespace()).List(ctx, metav1.ListOptions{})
 		if err != nil {
-			i.logger.Error("error on listing HPA", err)
+			loggerWithContext.Errorw("failed to list HPAs", "error", err)
 			return err
 		}
 
@@ -281,12 +299,11 @@ func (i *installer) ensureResource(ctx context.Context, expected *unstructured.U
 
 		// if a hpa found to this resource, update replicas value from the hpa
 		if hpa != nil {
-			i.logger.Debugw("hpa found for this resource, verifying replicas value from hpa",
-				"resourceName", expected.GetName(),
-				"resourceKind", expected.GetKind(),
-				"namespace", hpa.GetNamespace(),
+			hpaLogger := loggerWithContext.With(
 				"hpaName", hpa.GetName(),
+				"hpaNamespace", hpa.GetNamespace(),
 			)
+			hpaLogger.Debug("HPA found for resource, verifying replicas")
 
 			hpaScalingDisabled := true
 			// verify HPA status from ScalingActive condition
@@ -320,49 +337,33 @@ func (i *installer) ensureResource(ctx context.Context, expected *unstructured.U
 			}
 
 			if hpaScalingDisabled {
-				i.logger.Infow("hpa scaling is in disabled state, verifying manifest replicas value and adjusting it to hpa scaling range",
-					"resourceName", expected.GetName(),
-					"resourceKind", expected.GetKind(),
-					"namespace", hpa.GetNamespace(),
-					"hpaName", hpa.GetName(),
-				)
+				hpaLogger.Info("HPA scaling disabled, adjusting replicas to scaling range")
 
 				manifestReplicas, manifestReplicasFound, err := unstructured.NestedInt64(expected.Object, "spec", "replicas")
 				if err != nil {
-					i.logger.Errorw("error on getting manifest replicas",
-						"resourceName", expected.GetName(),
-						"resourceKind", expected.GetKind(),
-						"namespace", hpa.GetNamespace(),
-						err,
-					)
+					hpaLogger.Errorw("failed to get manifest replicas", "error", err)
 				} else if !manifestReplicasFound {
-					i.logger.Errorw("manifest replicas value is nil",
-						"resourceName", expected.GetName(),
-						"resourceKind", expected.GetKind(),
-						"namespace", hpa.GetNamespace(),
-					)
+					hpaLogger.Debug("manifest replicas not found, defaulting to 1")
 					// set default value as 1
 					manifestReplicas = 1
 				}
 
 				// adjust the manifest replicas value to hpa's scaling range
 				if manifestReplicas < int64(*minReplicas) {
+					originalReplicas := manifestReplicas
 					manifestReplicas = int64(*minReplicas)
-					i.logger.Infow("manifest replicas value is lower than the hpa minReplicas, updates with minReplicas",
-						"resourceName", expected.GetName(),
-						"resourceKind", expected.GetKind(),
-						"namespace", hpa.GetNamespace(),
-						"hpaName", hpa.GetName(),
-						"updatedManifestReplicas", manifestReplicas,
+					hpaLogger.Infow("adjusted replicas to minReplicas",
+						"originalReplicas", originalReplicas,
+						"newReplicas", manifestReplicas,
+						"minReplicas", *minReplicas,
 					)
 				} else if manifestReplicas > int64(maxReplicas) {
+					originalReplicas := manifestReplicas
 					manifestReplicas = int64(maxReplicas)
-					i.logger.Infow("manifest replicas value is higher than the hpa minReplicas, updates with maxReplicas",
-						"resourceName", expected.GetName(),
-						"resourceKind", expected.GetKind(),
-						"namespace", hpa.GetNamespace(),
-						"hpaName", hpa.GetName(),
-						"updatedManifestReplicas", manifestReplicas,
+					hpaLogger.Infow("adjusted replicas to maxReplicas",
+						"originalReplicas", originalReplicas,
+						"newReplicas", manifestReplicas,
+						"maxReplicas", maxReplicas,
 					)
 				}
 
@@ -370,49 +371,34 @@ func (i *installer) ensureResource(ctx context.Context, expected *unstructured.U
 				desiredReplicas = int32(manifestReplicas)
 
 			} else { // hpa scaling is enabled
-				i.logger.Debugw("hpa scaling is enabled, verifying replicas value from hpa",
-					"hpaName", hpa.GetName(),
+				hpaLogger.Debugw("HPA scaling enabled",
 					"desiredReplicas", desiredReplicas,
-					"minReplicas", minReplicas,
+					"minReplicas", *minReplicas,
+					"maxReplicas", maxReplicas,
 					"scaleTargetKind", hpa.Spec.ScaleTargetRef.Kind,
 					"scaleTargetName", hpa.Spec.ScaleTargetRef.Name,
-					"namespace", hpa.GetNamespace(),
 				)
 
 				// if there is no metrics data available in the cluster the HPA desiredReplicas will be zero
 				// compare minReplicas and desiredReplicas and take the higher one
 				if desiredReplicas < *minReplicas {
-					i.logger.Debugw("hpa desiredReplicas is lesser than minReplicas, taking minReplicas as desiredReplicas",
-						"hpaName", hpa.GetName(),
+					hpaLogger.Debugw("HPA desiredReplicas less than minReplicas, adjusting desiredReplicas to minReplicas",
+						"OriginalDesiredReplicas", desiredReplicas,
 						"minReplicas", *minReplicas,
 						"scaleTargetKind", hpa.Spec.ScaleTargetRef.Kind,
 						"scaleTargetName", hpa.Spec.ScaleTargetRef.Name,
-						"namespace", hpa.GetNamespace(),
 					)
 					desiredReplicas = *minReplicas
 				}
 			}
 
-			i.logger.Infow("calculated desiredReplicas from hpa and manifest",
-				"resourceName", expected.GetName(),
-				"resourceKind", expected.GetKind(),
-				"namespace", hpa.GetNamespace(),
-				"hpaName", hpa.GetName(),
-				"desiredReplicas", desiredReplicas,
-			)
+			hpaLogger.Infow("calculated final desired replicas", "desiredReplicas", desiredReplicas, "hpaScalingEnabled", !hpaScalingDisabled)
 
 			// update the replicas value from HPA in expected object
 			// note: converting the replicas value to int64, "DeepCopyJSONValue" not accepts int32, it is available inside "SetNestedField"
 			err = unstructured.SetNestedField(expected.Object, int64(desiredReplicas), "spec", "replicas")
 			if err != nil {
-				i.logger.Errorw("error on setting replicas value",
-					"hpaName", hpa.GetName(),
-					"desiredReplicas", desiredReplicas,
-					"scaleTargetKind", hpa.Spec.ScaleTargetRef.Kind,
-					"scaleTargetName", hpa.Spec.ScaleTargetRef.Name,
-					"namespace", hpa.GetNamespace(),
-					err,
-				)
+				hpaLogger.Errorw("failed to set replicas value", "error", err)
 				return err
 			}
 
@@ -424,34 +410,22 @@ func (i *installer) ensureResource(ctx context.Context, expected *unstructured.U
 	if err != nil {
 		// If the resource doesn't exist, then create new
 		if apierrs.IsNotFound(err) {
-			i.logger.Debugw("resource not found, creating",
-				"name", expected.GetName(),
-				"namespace", expected.GetNamespace(),
-				"kind", expected.GetKind(),
-			)
+			loggerWithContext.Info("resource not found, creating")
 			err = i.mfClient.Create(expected)
 			if err != nil {
-				i.logger.Debugw("error on creating a resource",
-					"name", expected.GetName(),
-					"namespace", expected.GetNamespace(),
-					"kind", expected.GetKind(),
-					err,
-				)
+				loggerWithContext.Errorw("failed to create resource", "error", err)
 				return err
 			}
+			loggerWithContext.Info("resource created successfully")
 		}
+		loggerWithContext.Errorw("failed to get resource", "error", err)
 		return err
 	}
 
-	i.logger.Debugw("resource found in cluster, checking for changes",
-		"name", existing.GetName(),
-		"namespace", existing.GetNamespace(),
-		"kind", existing.GetKind(),
-	)
+	loggerWithContext.Debug("resource found in cluster, checking for changes")
 
 	if existing.GetDeletionTimestamp() != nil {
-		i.logger.Debugf("waiting for resource %s: %s/%s to be deleted",
-			existing.GetKind(), existing.GetNamespace(), existing.GetName())
+		loggerWithContext.Debug("resource is being deleted, waiting for completion")
 		return v1alpha1.RECONCILE_AGAIN_ERR
 	}
 
@@ -461,12 +435,8 @@ func (i *installer) ensureResource(ctx context.Context, expected *unstructured.U
 	// compute hash value for the expected deployment or statefulset
 	expectedHashValue, err := i.computeResourceHash(expected, reconcileFields...)
 	if err != nil {
-		i.logger.Errorw("error on compute a hash value to a expected resource",
-			"name", expected.GetName(),
-			"namespace", expected.GetNamespace(),
-			"kind", expected.GetKind(),
-		)
-		return fmt.Errorf("failed to compute hash value to expected resource, name:%s, error: %v", expected.GetName(), err)
+		loggerWithContext.Errorw("failed to compute hash for expected resource", "error", err)
+		return fmt.Errorf("failed to compute hash value for expected resource, name:%s, error: %v", expected.GetName(), err)
 	}
 
 	// compute hash value for the existing resource
@@ -477,49 +447,35 @@ func (i *installer) ensureResource(ctx context.Context, expected *unstructured.U
 	// compute hash
 	existingHashValue, err := i.computeResourceHash(existingCloned, reconcileFields...)
 	if err != nil {
-		i.logger.Errorw("error on computing hash value to an existing resource",
-			"name", existingCloned.GetName(),
-			"namespace", existingCloned.GetNamespace(),
-			"kind", existingCloned.GetKind(),
-		)
-		return fmt.Errorf("failed to compute hash value of a existing resource, name:%s, namespace:%s, kind:%s error: %v",
+		loggerWithContext.Errorw("failed to compute hash for existing resource", "error", err)
+		return fmt.Errorf("failed to compute hash value for existing resource, name:%s, namespace:%s, kind:%s error: %v",
 			existingCloned.GetName(), existingCloned.GetNamespace(), existingCloned.GetKind(), err,
 		)
 	}
 
 	// if change detected in hash value, update the resource with changes
 	if existingHashValue != expectedHashValue {
-		i.logger.Debugw("change detected in the resource, reconciling",
-			"name", existing.GetName(),
-			"namespace", existing.GetNamespace(),
-			"kind", existing.GetKind(),
-			"existingHashValue", existingHashValue,
-			"expectedHashValue", expectedHashValue,
+		loggerWithContext.Infow("change detected, updating resource",
+			"existingHash", existingHashValue,
+			"expectedHash", expectedHashValue,
 		)
+
 		err = i.copyResourceFields(expected, existing, reconcileFields...)
 		if err != nil {
+			loggerWithContext.Errorw("failed to copy resource fields", "error", err)
 			return err
 		}
 
 		err = i.mfClient.Update(existing)
 		if err != nil {
-			i.logger.Errorw("error on updating a resource",
-				"resourceName", existing.GetName(),
-				"namespace", existing.GetNamespace(),
-				"kind", existing.GetKind(),
-				err,
-			)
+			loggerWithContext.Errorw("failed to update resource", "error", err)
 			return v1alpha1.RECONCILE_AGAIN_ERR
 		}
 
-		i.logger.Debugw("reconciliation successful",
-			"name", existing.GetName(),
-			"namespace", existing.GetNamespace(),
-			"kind", existing.GetKind(),
-		)
+		loggerWithContext.Info("resource updated successfully")
 		return nil
 	}
-
+	loggerWithContext.Debug("no changes detected, resource is up-to-date")
 	return nil
 }
 
@@ -779,6 +735,9 @@ func (i *installer) DeleteResources() error {
 	if err := i.delete(i.namespaceScoped); err != nil {
 		return err
 	}
+	if err := i.deleteWithPolicy(i.job, metav1.DeletePropagationForeground); err != nil {
+		return err
+	}
 	if err := i.delete(i.deployment); err != nil {
 		return err
 	}
@@ -803,6 +762,31 @@ func (i *installer) delete(resources []unstructured.Unstructured) error {
 		if err != nil {
 			return err
 		}
+
+	}
+	return nil
+}
+
+func (i *installer) deleteWithPolicy(resources []unstructured.Unstructured, policy metav1.DeletionPropagation) error {
+	for _, r := range resources {
+		if skipDeletion(r.GetKind()) {
+			continue
+		}
+		resource, err := i.mfClient.Get(&r)
+		if err != nil {
+			// if error occurs log and move on, as we have owner reference set for resources, those
+			// will be removed eventually and manifestival breaks the pod during uninstallation,
+			// when CRD is deleted, CRs are removed but when we delete installer set, manifestival
+			// breaks during deleting those CRs
+			i.logger.Errorf("failed to get resource, skipping deletion: %v/%v: %v ", r.GetKind(), r.GetName(), err)
+			continue
+		}
+
+		err = i.mfClient.Delete(resource, mf.DeleteOption(mf.PropagationPolicy(policy)))
+		if err != nil {
+			return err
+		}
+
 	}
 	return nil
 }

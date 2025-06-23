@@ -40,10 +40,35 @@ func RecordDebugGraph(ctx *OpContext, v *Vertex, name string) {
 	}
 }
 
+var (
+	// DebugDeps enables dependency tracking for debugging purposes.
+	// It is off by default, as it adds a significant overhead.
+	//
+	// TODO: hook this init CUE_DEBUG, once we have set this up as a single
+	// environment variable. For instance, CUE_DEBUG=matchdeps=1.
+	DebugDeps = false
+
+	OpenGraphs = false
+
+	// MaxGraphs is the maximum number of debug graphs to be opened. To avoid
+	// confusion, a panic will be raised if this number is exceeded.
+	MaxGraphs = 10
+
+	numberOpened = 0
+)
+
 // OpenNodeGraph takes a given mermaid graph and opens it in the system default
 // browser.
 func OpenNodeGraph(title, path, code, out, graph string) {
-	err := os.MkdirAll(path, 0755)
+	if !OpenGraphs {
+		return
+	}
+	if numberOpened > MaxGraphs {
+		panic("too many debug graphs opened")
+	}
+	numberOpened++
+
+	err := os.MkdirAll(path, 0777)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -115,167 +140,11 @@ func OpenNodeGraph(title, path, code, out, graph string) {
 // and all its dependencies that have not completed processing.
 // DO NOT DELETE: this is used to insert during debugging of the evaluator
 // to inspect a node.
-func openDebugGraph(ctx *OpContext, v *Vertex, name string) {
+func openDebugGraph(ctx *OpContext, cc *closeContext, name string) {
+	v := cc.src
 	graph, _ := CreateMermaidGraph(ctx, v, true)
-	path := filepath.Join(".debug", "TestX", name)
+	path := filepath.Join(".debug", "TestX", name, fmt.Sprintf("%p", cc))
 	OpenNodeGraph(name, path, "in", "out", graph)
-}
-
-// depKind is a type of dependency that is tracked with incDependent and
-// decDependent. For each there should be matching pairs passed to these
-// functions. The debugger, when used, tracks and verifies that these
-// dependencies are balanced.
-type depKind int
-
-const (
-	// PARENT dependencies are used to track the completion of parent
-	// closedContexts within the closedness tree.
-	PARENT depKind = iota + 1
-
-	// ARC dependencies are used to track the completion of corresponding
-	// closedContexts in parent Vertices.
-	ARC
-
-	// NOTIFY dependencies keep a note while dependent conjuncts are collected
-	NOTIFY // root node of source
-
-	// TASK dependencies are used to track the completion of a task.
-	TASK
-
-	// EVAL tracks that the conjunct associated with a closeContext has been
-	// inserted using scheduleConjunct. A closeContext may not be deleted
-	// as long as the conjunct has not been evaluated yet.
-	// This prevents a node from being released if an ARC decrement happens
-	// before a node is evaluated.
-	EVAL
-
-	// ROOT dependencies are used to track that all nodes of parents are
-	// added to a tree.
-	ROOT // Always refers to self.
-
-	// INIT dependencies are used to hold ownership of a closeContext during
-	// initialization and prevent it from being finalized when scheduling a
-	// node's conjuncts.
-	INIT
-
-	// DEFER is used to track recursive processing of a node.
-	DEFER // Always refers to self.
-
-	// TEST is used for testing notifications.
-	TEST // Always refers to self.
-)
-
-func (k depKind) String() string {
-	switch k {
-	case PARENT:
-		return "PARENT"
-	case ARC:
-		return "ARC"
-	case NOTIFY:
-		return "NOTIFY"
-	case TASK:
-		return "TASK"
-	case EVAL:
-		return "EVAL"
-	case ROOT:
-		return "ROOT"
-
-	case INIT:
-		return "INIT"
-	case DEFER:
-		return "DEFER"
-	case TEST:
-		return "TEST"
-	}
-	panic("unreachable")
-}
-
-// ccDep is used to record counters which is used for debugging only.
-// It is purpose is to be precise about matching inc/dec as well as to be able
-// to traverse dependency.
-type ccDep struct {
-	dependency  *closeContext
-	kind        depKind
-	decremented bool
-
-	// task keeps a reference to a task for TASK dependencies.
-	task *task
-	// taskID indicates the sequence number of a task within a scheduler.
-	taskID int
-}
-
-// DebugDeps enables dependency tracking for debugging purposes.
-// It is off by default, as it adds a significant overhead.
-//
-// TODO: hook this init CUE_DEBUG, once we have set this up as a single
-// environment variable. For instance, CUE_DEBUG=matchdeps=1.
-var DebugDeps = false
-
-func (c *closeContext) addDependent(kind depKind, dependant *closeContext) *ccDep {
-	if !DebugDeps {
-		return nil
-	}
-
-	if dependant == nil {
-		dependant = c
-	}
-
-	if Verbosity > 1 {
-		var state *nodeContext
-		if c.src != nil && c.src.state != nil {
-			state = c.src.state
-		} else if dependant != nil && dependant.src != nil && dependant.src.state != nil {
-			state = dependant.src.state
-		}
-		if state != nil {
-			state.Logf("INC(%s, %d) %v; %p (parent: %p) <= %p\n", kind, c.conjunctCount, c.Label(), c, c.parent, dependant)
-		} else {
-			log.Printf("INC(%s) %v %p parent: %p %d\n", kind, c.Label(), c, c.parent, c.conjunctCount)
-		}
-	}
-
-	dep := &ccDep{kind: kind, dependency: dependant}
-	c.dependencies = append(c.dependencies, dep)
-
-	return dep
-}
-
-// matchDecrement checks that this decrement matches a previous increment.
-func (c *closeContext) matchDecrement(v *Vertex, kind depKind, dependant *closeContext) {
-	if !DebugDeps {
-		return
-	}
-
-	if dependant == nil {
-		dependant = c
-	}
-
-	if Verbosity > 1 {
-		if v.state != nil {
-			v.state.Logf("DEC(%s) %v %p %d\n", kind, c.Label(), c, c.conjunctCount)
-		} else {
-			log.Printf("DEC(%s) %v %p %d\n", kind, c.Label(), c, c.conjunctCount)
-		}
-	}
-
-	for _, d := range c.dependencies {
-		if d.kind != kind {
-			continue
-		}
-		if d.dependency != dependant {
-			continue
-		}
-		// Only one typ-dependant pair possible.
-		if d.decremented {
-			// There might be a duplicate entry, so continue searching.
-			continue
-		}
-
-		d.decremented = true
-		return
-	}
-
-	panic(fmt.Sprintf("unmatched decrement: %s", kind))
 }
 
 // mermaidContext is used to create a dependency analysis for a node.
@@ -338,6 +207,7 @@ func CreateMermaidGraph(ctx *OpContext, v *Vertex, all bool) (graph string, hasE
 
 	io.WriteString(m.w, "graph TD\n")
 	io.WriteString(m.w, "   classDef err fill:#e01010,stroke:#000000,stroke-width:3,font-size:medium\n")
+	fmt.Fprintf(m.w, "   title[<b>%v</b>]\n", ctx.disjunctInfo())
 
 	indent(m.w, 1)
 	fmt.Fprintf(m.w, "style %s stroke-width:5\n\n", m.vertexID(v))
@@ -392,7 +262,7 @@ func CreateMermaidGraph(ctx *OpContext, v *Vertex, all bool) (graph string, hasE
 //
 //	 Each closeContext has the following info: ptr(cc); cc.count
 func (m *mermaidContext) vertex(v *Vertex) *mermaidVertex {
-	root := v.rootCloseContext()
+	root := v.rootCloseContext(m.ctx)
 
 	vc := m.roots[root]
 	if vc != nil {
@@ -413,7 +283,7 @@ func (m *mermaidContext) vertex(v *Vertex) *mermaidVertex {
 
 	var status string
 	switch {
-	case v.status == finalized:
+	case v.Status() == finalized:
 		status = "finalized"
 	case v.state == nil:
 		status = "ready"
@@ -470,7 +340,7 @@ func (m *mermaidContext) task(d *ccDep) string {
 		fmt.Fprintf(vc.tasks, "subgraph %s_tasks[tasks]\n", m.vertexID(v))
 	}
 
-	if v != d.task.node.node {
+	if d.task != nil && v != d.task.node.node {
 		panic("inconsistent task")
 	}
 	taskID := fmt.Sprintf("%s_%d", m.vertexID(v), d.taskID)
@@ -531,24 +401,19 @@ func (m *mermaidContext) cc(cc *closeContext) {
 		case PARENT:
 			w = node
 			name = m.pstr(d.dependency)
-		case EVAL:
-			if cc.Label().IsLet() {
-				// Do not show eval links for let nodes, as they never depend
-				// on the parent node. Alternatively, link them to the root
-				// node instead.
-				return
-			}
-			fallthrough
-		case ARC, NOTIFY:
+		case EVAL, ARC, NOTIFY, DISJUNCT, COMP:
 			w = global
 			indentLevel = 1
 			name = m.pstr(d.dependency)
 
 		case TASK:
 			w = node
-			taskID := m.task(d)
+			taskID := "disjunct"
+			if d.task != nil {
+				taskID = m.task(d)
+			}
 			name = fmt.Sprintf("%s((%d))", taskID, d.taskID)
-		case ROOT, INIT:
+		case ROOT, INIT, SHARED:
 			w = node
 			src := cc.src
 			if v.f != src.Label {
@@ -614,7 +479,7 @@ func (m *mermaidContext) pstr(cc *closeContext) string {
 	w.WriteString(open)
 	w.WriteString("cc")
 	if cc.conjunctCount > 0 {
-		fmt.Fprintf(w, " c:%d", cc.conjunctCount)
+		fmt.Fprintf(w, " c:%d: d:%d", cc.conjunctCount, cc.disjunctCount)
 	}
 	indentOnNewline(w, 3)
 	w.WriteString(ptr)
@@ -625,16 +490,31 @@ func (m *mermaidContext) pstr(cc *closeContext) string {
 			flags.WriteByte(flag)
 		}
 	}
-	addFlag(cc.isDef, '#')
+	addFlag(cc.isDefOrig, '#')
 	addFlag(cc.isEmbed, 'E')
 	addFlag(cc.isClosed, 'c')
 	addFlag(cc.isClosedOnce, 'C')
-	addFlag(cc.hasEllipsis, 'o')
+	addFlag(cc.isTotal, 'o')
+	flags.WriteByte(cc.arcType.String()[0])
 	io.Copy(w, flags)
+
+	// Show the origin of the closeContext.
+	indentOnNewline(w, 3)
+	fmt.Fprintf(w, "+%d", cc.depth)
+	if cc.holeID != 0 {
+		fmt.Fprintf(w, " H%d", cc.holeID)
+	}
 
 	w.WriteString(close)
 
-	if cc.conjunctCount > 0 {
+	switch {
+	case cc.conjunctCount == 0:
+	case cc.conjunctCount <= cc.disjunctCount:
+		// TODO: Extra checks for disjunctions?
+		// E.g.: cc.src is not a disjunction
+	default:
+		// If cc.conjunctCount > cc.disjunctCount.
+		// TODO: count the number of non-decremented DISJUNCT dependencies.
 		fmt.Fprintf(w, ":::err")
 		if cc.src == m.v {
 			m.hasError = true

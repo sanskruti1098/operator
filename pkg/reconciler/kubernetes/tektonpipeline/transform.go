@@ -18,7 +18,6 @@ package tektonpipeline
 
 import (
 	"context"
-	"fmt"
 	"sort"
 	"strings"
 
@@ -30,7 +29,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	apimachineryRuntime "k8s.io/apimachinery/pkg/runtime"
-	"knative.dev/pkg/ptr"
 )
 
 const (
@@ -43,18 +41,31 @@ const (
 	clusterResolverConfig                        = "cluster-resolver-config"
 	hubResolverConfig                            = "hubresolver-config"
 	gitResolverConfig                            = "git-resolver-config"
-	leaderElectionConfig                         = "config-leader-election-controller"
+	leaderElectionPipelineConfig                 = "config-leader-election-controller"
+	leaderElectionResolversConfig                = "config-leader-election-resolvers"
 	pipelinesControllerDeployment                = "tekton-pipelines-controller"
 	pipelinesControllerContainer                 = "tekton-pipelines-controller"
 	pipelinesRemoteResolversControllerDeployment = "tekton-pipelines-remote-resolvers"
 	pipelinesRemoteResolverControllerContainer   = "controller"
 	resolverEnvKeyTektonHubApi                   = "tekton-hub-api"
 	resolverEnvKeyArtifactHubApi                 = "artifact-hub-api"
+
+	tektonPipelinesControllerName                      = "tekton-pipelines-controller"
+	tektonPipelinesServiceName                         = "tekton-pipelines-controller"
+	tektonRemoteResolversControllerName                = "tekton-pipelines-remote-resolvers"
+	tektonRemoteResolversServiceName                   = "tekton-pipelines-remote-resolvers"
+	tektonPipelinesControllerStatefulServiceName       = "STATEFUL_SERVICE_NAME"
+	tektonPipelinesControllerStatefulControllerOrdinal = "STATEFUL_CONTROLLER_ORDINAL"
 )
 
 func filterAndTransform(extension common.Extension) client.FilterAndTransform {
 	return func(ctx context.Context, manifest *mf.Manifest, comp v1alpha1.TektonComponent) (*mf.Manifest, error) {
 		pipeline := comp.(*v1alpha1.TektonPipeline)
+
+		// not in use, see: https://github.com/tektoncd/pipeline/pull/7789
+		// this field is removed from pipeline component
+		// still keeping types to maintain the API compatibility
+		pipeline.Spec.Pipeline.EnableTektonOciBundles = nil
 
 		images := common.ToLowerCaseKeys(common.ImagesFromEnv(common.PipelinesImagePrefix))
 		instance := comp.(*v1alpha1.TektonPipeline)
@@ -67,16 +78,27 @@ func filterAndTransform(extension common.Extension) client.FilterAndTransform {
 			common.AddConfigMapValues(ConfigMetrics, pipeline.Spec.PipelineMetricsProperties),
 			common.AddConfigMapValues(ResolverFeatureFlag, pipeline.Spec.Resolvers),
 			common.DeploymentImages(images),
+			common.StatefulSetImages(images),
+			common.DeploymentEnvVarKubernetesMinVersion(),
 			common.InjectLabelOnNamespace(proxyLabel),
 			common.AddConfiguration(pipeline.Spec.Config),
 			common.CopyConfigMap(bundleResolverConfig, pipeline.Spec.BundlesResolverConfig),
 			common.CopyConfigMap(hubResolverConfig, pipeline.Spec.HubResolverConfig),
 			common.CopyConfigMap(clusterResolverConfig, pipeline.Spec.ClusterResolverConfig),
 			common.CopyConfigMap(gitResolverConfig, pipeline.Spec.GitResolverConfig),
-			common.AddConfigMapValues(leaderElectionConfig, pipeline.Spec.Performance.PipelinePerformanceLeaderElectionConfig),
-			updatePerformanceFlagsInDeployment(pipeline),
+			common.AddConfigMapValues(leaderElectionPipelineConfig, pipeline.Spec.Performance.PerformanceLeaderElectionConfig),
+			common.AddConfigMapValues(leaderElectionResolversConfig, pipeline.Spec.Performance.PerformanceLeaderElectionConfig),
+			common.UpdatePerformanceFlagsInDeploymentAndLeaderConfigMap(&pipeline.Spec.Performance, leaderElectionPipelineConfig, pipelinesControllerDeployment, pipelinesControllerContainer),
+			common.UpdatePerformanceFlagsInDeploymentAndLeaderConfigMap(&pipeline.Spec.Performance, leaderElectionResolversConfig, pipelinesRemoteResolversControllerDeployment, pipelinesRemoteResolverControllerContainer),
 			updateResolverConfigEnvironmentsInDeployment(pipeline),
 		}
+		if pipeline.Spec.Performance.StatefulsetOrdinals != nil && *pipeline.Spec.Performance.StatefulsetOrdinals {
+			extra = append(extra, common.ConvertDeploymentToStatefulSet(tektonPipelinesControllerName, tektonPipelinesServiceName), common.AddStatefulEnvVars(
+				tektonPipelinesControllerName, tektonPipelinesServiceName, tektonPipelinesControllerStatefulServiceName, tektonPipelinesControllerStatefulControllerOrdinal))
+			extra = append(extra, common.ConvertDeploymentToStatefulSet(tektonRemoteResolversControllerName, tektonRemoteResolversServiceName), common.AddStatefulEnvVars(
+				tektonRemoteResolversControllerName, tektonRemoteResolversServiceName, tektonPipelinesControllerStatefulServiceName, tektonPipelinesControllerStatefulControllerOrdinal))
+		}
+
 		trns = append(trns, extra...)
 
 		if err := common.Transform(ctx, manifest, instance, trns...); err != nil {
@@ -90,101 +112,6 @@ func filterAndTransform(extension common.Extension) client.FilterAndTransform {
 		}
 
 		return manifest, nil
-	}
-}
-
-// updates performance flags/args into pipelines controller container
-func updatePerformanceFlagsInDeployment(pipelineCR *v1alpha1.TektonPipeline) mf.Transformer {
-	return func(u *unstructured.Unstructured) error {
-		if u.GetKind() != "Deployment" || u.GetName() != pipelinesControllerDeployment {
-			return nil
-		}
-
-		// holds the flags needs to be added in the container args section
-		flags := map[string]interface{}{}
-
-		// convert struct to map with json tag
-		// so that, we can map the arguments as is
-		performanceSpec := pipelineCR.Spec.Performance
-		if err := common.StructToMap(&performanceSpec.PipelineDeploymentPerformanceArgs, &flags); err != nil {
-			return err
-		}
-
-		// if there is no flags to update, return from here
-		if len(flags) == 0 {
-			return nil
-		}
-
-		// convert unstructured object to deployment
-		dep := &appsv1.Deployment{}
-		err := apimachineryRuntime.DefaultUnstructuredConverter.FromUnstructured(u.Object, dep)
-		if err != nil {
-			return err
-		}
-
-		// include config-leader-election data into deployment pod label
-		// so that pods will be recreated, if there is a change in "buckets"
-		leaderElectionConfigMapData := map[string]interface{}{}
-		if err = common.StructToMap(&performanceSpec.PipelinePerformanceLeaderElectionConfig, &leaderElectionConfigMapData); err != nil {
-			return err
-		}
-		podLabels := dep.Spec.Template.Labels
-		if podLabels == nil {
-			podLabels = map[string]string{}
-		}
-		// sort data keys in an order, to get the consistent hash value in installerset
-		labelKeys := getSortedKeys(leaderElectionConfigMapData)
-		for _, key := range labelKeys {
-			value := leaderElectionConfigMapData[key]
-			labelKey := fmt.Sprintf("%s.data.%s", leaderElectionConfig, key)
-			podLabels[labelKey] = fmt.Sprintf("%v", value)
-		}
-		dep.Spec.Template.Labels = podLabels
-
-		// update replicas, if available
-		if performanceSpec.Replicas != nil {
-			dep.Spec.Replicas = ptr.Int32(*performanceSpec.Replicas)
-		}
-
-		// include it in the pods label, that will recreate all the pods, if there is a change in replica count
-		if dep.Spec.Replicas != nil {
-			dep.Spec.Template.Labels["deployment.spec.replicas"] = fmt.Sprintf("%d", *dep.Spec.Replicas)
-		}
-
-		// sort flag keys in an order, to get the consistent hash value in installerset
-		flagKeys := getSortedKeys(flags)
-		// update performance arguments into target container
-		for containerIndex, container := range dep.Spec.Template.Spec.Containers {
-			if container.Name != pipelinesControllerContainer {
-				continue
-			}
-			for _, flagKey := range flagKeys {
-				// update the arg name with "-" prefix
-				expectedArg := fmt.Sprintf("-%s", flagKey)
-				argStringValue := fmt.Sprintf("%v", flags[flagKey])
-				argUpdated := false
-				for argIndex, existingArg := range container.Args {
-					if strings.HasPrefix(existingArg, expectedArg) {
-						container.Args[argIndex] = fmt.Sprintf("%s=%s", expectedArg, argStringValue)
-						argUpdated = true
-						break
-					}
-				}
-				if !argUpdated {
-					container.Args = append(container.Args, fmt.Sprintf("%s=%s", expectedArg, argStringValue))
-				}
-			}
-			dep.Spec.Template.Spec.Containers[containerIndex] = container
-		}
-
-		// convert deployment to unstructured object
-		obj, err := apimachineryRuntime.DefaultUnstructuredConverter.ToUnstructured(dep)
-		if err != nil {
-			return err
-		}
-		u.SetUnstructuredContent(obj)
-
-		return nil
 	}
 }
 
@@ -265,14 +192,4 @@ func updateResolverConfigEnvironmentsInDeployment(pipelineCR *v1alpha1.TektonPip
 
 		return nil
 	}
-}
-
-// sort keys in an order, to get the consistent hash value in installerset
-func getSortedKeys(input map[string]interface{}) []string {
-	keys := []string{}
-	for key := range input {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	return keys
 }

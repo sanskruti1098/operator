@@ -170,7 +170,7 @@ func Test_ValidateTektonConfig_InvalidAddonParamValue(t *testing.T) {
 			Addon: Addon{
 				Params: []Param{
 					{
-						Name:  "clusterTasks",
+						Name:  "resolverTasks",
 						Value: "test",
 					},
 				},
@@ -180,7 +180,7 @@ func Test_ValidateTektonConfig_InvalidAddonParamValue(t *testing.T) {
 	}
 
 	err := tc.Validate(context.TODO())
-	assert.Equal(t, "invalid value: test: spec.addon.params.clusterTasks[0]", err.Error())
+	assert.Equal(t, "invalid value: test: spec.addon.params.resolverTasks[0]", err.Error())
 }
 
 func Test_ValidateTektonConfig_InvalidPipelineProperties(t *testing.T) {
@@ -224,7 +224,7 @@ func Test_ValidateTektonConfig_InvalidPipelineOptions(t *testing.T) {
 			Pipeline: Pipeline{
 				Options: AdditionalOptions{
 					WebhookConfigurationOptions: map[string]WebhookConfigurationOptions{
-						"validation.webhook.tekton.dev": WebhookConfigurationOptions{
+						"validation.webhook.tekton.dev": {
 							FailurePolicy: &invalidPolicy,
 							SideEffects:   &sideEffectUnknown,
 						},

@@ -17,19 +17,19 @@ limitations under the License.
 package tektonresult
 
 import (
-	"fmt"
 	"path"
-	"testing"
 
 	mf "github.com/manifestival/manifestival"
-	appsv1 "k8s.io/api/apps/v1"
-	corev1 "k8s.io/api/core/v1"
-
-	"gotest.tools/v3/assert"
-
 	"k8s.io/apimachinery/pkg/runtime"
 
+	"fmt"
+	"testing"
+
 	"github.com/tektoncd/operator/pkg/apis/operator/v1alpha1"
+
+	"gotest.tools/v3/assert"
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 )
 
 func Test_enablePVCLogging(t *testing.T) {
@@ -40,8 +40,9 @@ func Test_enablePVCLogging(t *testing.T) {
 	deployment := &appsv1.Deployment{}
 	err = runtime.DefaultUnstructuredConverter.FromUnstructured(manifest.Resources()[0].Object, deployment)
 	assert.NilError(t, err)
+	logsAPI := true
 	prop := v1alpha1.ResultsAPIProperties{
-		LogsAPI:        true,
+		LogsAPI:        &logsAPI,
 		LogsType:       "File",
 		LogsPath:       "logs",
 		LoggingPVCName: "tekton-logs",
@@ -62,29 +63,47 @@ func Test_updateApiConfig(t *testing.T) {
 	manifest, err := mf.ManifestFrom(mf.Recursive(testData))
 	assert.NilError(t, err)
 
+	boolVal := true
+	intVal := int64(12345)
+	limit := uint(100)
 	cm := &corev1.ConfigMap{}
 	err = runtime.DefaultUnstructuredConverter.FromUnstructured(manifest.Resources()[0].Object, cm)
 	assert.NilError(t, err)
-	prop := v1alpha1.ResultsAPIProperties{
-		DBHost:                "localhost",
-		DBName:                "test",
-		DBPort:                5432,
-		ServerPort:            12345,
-		PrometheusPort:        12347,
-		DBSSLMode:             "enable",
-		DBEnableAutoMigration: true,
-		TLSHostnameOverride:   "localhostTest",
-		AuthDisable:           true,
-		AuthImpersonate:       true,
-		LogLevel:              "warn",
-		LogsAPI:               true,
-		LogsPath:              "/logs/test",
-		LogsType:              "s3",
-		LogsBufferSize:        12321,
-		StorageEmulatorHost:   "http://localhost:9004",
+	bufferDuration := uint(20)
+	spec := v1alpha1.TektonResultSpec{
+		Result: v1alpha1.Result{
+
+			LokiStackProperties: v1alpha1.LokiStackProperties{
+				LokiStackName:      "foo",
+				LokiStackNamespace: "bar",
+			},
+			ResultsAPIProperties: v1alpha1.ResultsAPIProperties{
+				DBHost:                              "localhost",
+				DBName:                              "test",
+				ServerPort:                          &intVal,
+				DBSSLMode:                           "enable",
+				DBSSLRootCert:                       "/etc/tls/db/ca.crt",
+				DBEnableAutoMigration:               &boolVal,
+				TLSHostnameOverride:                 "localhostTest",
+				AuthDisable:                         &boolVal,
+				AuthImpersonate:                     &boolVal,
+				PrometheusPort:                      &intVal,
+				PrometheusHistogram:                 &boolVal,
+				LogLevel:                            "warn",
+				LogsAPI:                             &boolVal,
+				LogsPath:                            "/logs/test",
+				LogsType:                            "s3",
+				LogsBufferSize:                      &intVal,
+				StorageEmulatorHost:                 "http://localhost:9004",
+				LoggingPluginForwarderDelayDuration: &bufferDuration,
+				LoggingPluginQueryLimit:             &limit,
+				LoggingPluginQueryParams:            "direction=asc&skip=0",
+				LoggingPluginMultipartRegex:         `-%s`,
+			},
+		},
 	}
 
-	manifest, err = manifest.Transform(updateApiConfig(prop))
+	manifest, err = manifest.Transform(updateApiConfig(spec))
 	assert.NilError(t, err)
 
 	err = runtime.DefaultUnstructuredConverter.FromUnstructured(manifest.Resources()[0].Object, cm)
@@ -93,24 +112,37 @@ func Test_updateApiConfig(t *testing.T) {
 	assert.Equal(t, cm.Data["config"], `DB_HOST=localhost
 DB_PORT=5432
 SERVER_PORT=12345
-PROMETHEUS_PORT=12347
+PROMETHEUS_PORT=12345
+PROMETHEUS_HISTOGRAM=true
 DB_NAME=test
 DB_SSLMODE=enable
+DB_SSLROOTCERT=/etc/tls/db/ca.crt
 DB_ENABLE_AUTO_MIGRATION=true
 TLS_HOSTNAME_OVERRIDE=localhostTest
 TLS_PATH=/etc/tls
 AUTH_DISABLE=true
 AUTH_IMPERSONATE=true
 LOG_LEVEL=warn
+LOGGING_PLUGIN_API_URL=https://foo-gateway-http.bar.svc.cluster.local:8080
+LOGGING_PLUGIN_FORWARDER_DELAY_DURATION=20
+LOGGING_PLUGIN_NAMESPACE_KEY=kubernetes_namespace_name
+LOGGING_PLUGIN_PROXY_PATH=/api/logs/v1/application
+LOGGING_PLUGIN_STATIC_LABELS=log_type=application
+LOGGING_PLUGIN_TLS_VERIFICATION_DISABLE=false
+LOGGING_PLUGIN_TOKEN_PATH=/var/run/secrets/kubernetes.io/serviceaccount/token
 LOGS_API=true
 LOGS_TYPE=s3
-LOGS_BUFFER_SIZE=12321
+LOGS_BUFFER_SIZE=12345
 LOGS_PATH=/logs/test
+LOGGING_PLUGIN_QUERY_LIMIT=100
+LOGGING_PLUGIN_QUERY_PARAMS=direction=asc&skip=0
+LOGGING_PLUGIN_MULTIPART_REGEX=-%s
 STORAGE_EMULATOR_HOST=http://localhost:9004`)
 }
 
 func Test_GoogleCred(t *testing.T) {
 	testData := []string{path.Join("testdata", "api-deployment-gcs.yaml"), path.Join("testdata", "api-deployment.yaml")}
+	logsAPI := true
 	for i := range testData {
 		manifest, err := mf.ManifestFrom(mf.Recursive(testData[i]))
 		assert.NilError(t, err)
@@ -119,7 +151,7 @@ func Test_GoogleCred(t *testing.T) {
 		err = runtime.DefaultUnstructuredConverter.FromUnstructured(manifest.Resources()[0].Object, deployment)
 		assert.NilError(t, err)
 		prop := v1alpha1.ResultsAPIProperties{
-			LogsAPI:            true,
+			LogsAPI:            &logsAPI,
 			LogsType:           "GCS",
 			GCSCredsSecretName: "foo-test",
 			GCSCredsSecretKey:  "bar-test",
@@ -190,6 +222,122 @@ func TestUpdateEnvWithSecretName(t *testing.T) {
 			}
 			assert.Equal(t, true, envFound, fmt.Sprintf("property not found in env:%s", propertyKey))
 		}
+	}
+	assert.Equal(t, true, containerFound, "container not found")
+}
+
+func TestUpdateAPIEnv(t *testing.T) {
+	testData := path.Join("testdata", "api-deployment-env.yaml")
+	manifest, err := mf.ManifestFrom(mf.Recursive(testData))
+	assert.NilError(t, err)
+
+	deployment := &appsv1.Deployment{}
+	err = runtime.DefaultUnstructuredConverter.FromUnstructured(manifest.Resources()[0].Object, deployment)
+	assert.NilError(t, err)
+
+	boolVal := true
+	intVal := int64(12345)
+	spec := v1alpha1.TektonResultSpec{
+		Result: v1alpha1.Result{
+
+			ResultsAPIProperties: v1alpha1.ResultsAPIProperties{
+				DBHost:                "localhost",
+				DBName:                "test",
+				ServerPort:            &intVal,
+				DBEnableAutoMigration: &boolVal,
+				TLSHostnameOverride:   "localhostTest",
+				AuthDisable:           &boolVal,
+				LogLevel:              "warn",
+				LogsAPI:               &boolVal,
+				LogsPath:              "/logs/test",
+				LogsType:              "S3",
+				LogsBufferSize:        &intVal,
+			},
+		},
+	}
+
+	manifest, err = manifest.Transform(updateApiEnv(spec))
+	assert.NilError(t, err)
+
+	err = runtime.DefaultUnstructuredConverter.FromUnstructured(manifest.Resources()[0].Object, deployment)
+	assert.NilError(t, err)
+
+	containerFound := false
+	for _, container := range deployment.Spec.Template.Spec.Containers {
+		if container.Name != apiContainerName {
+			continue
+		}
+		containerFound = true
+		envFound := false
+		for _, env := range container.Env {
+			switch env.Name {
+			case "LOGS_PATH":
+				envFound = true
+				assert.Equal(t, env.Value, "/logs/test")
+			case "LOGS_TYPE":
+				envFound = true
+				assert.Equal(t, env.Value, "S3")
+			case "SERVER_PORT":
+				envFound = true
+				assert.Equal(t, env.Value, "12345")
+			case "AUTH_DISABLE":
+				envFound = true
+				assert.Equal(t, env.Value, "true")
+			}
+		}
+		assert.Equal(t, true, envFound, "env not found")
+
+	}
+	assert.Equal(t, true, containerFound, "container not found")
+}
+
+func TestUpdateEnvWithDBSecretName(t *testing.T) {
+	testData := path.Join("testdata", "api-deployment.yaml")
+	manifest, err := mf.ManifestFrom(mf.Recursive(testData))
+	assert.NilError(t, err)
+
+	dbSecretName := "my_custom_secret"
+
+	deployment := &appsv1.Deployment{}
+	err = runtime.DefaultUnstructuredConverter.FromUnstructured(manifest.Resources()[0].Object, deployment)
+	assert.NilError(t, err)
+	prop := v1alpha1.ResultsAPIProperties{
+		DBSecretName:        dbSecretName,
+		DBSecretUserKey:     "user1",
+		DBSecretPasswordKey: "random-password",
+	}
+
+	manifest, err = manifest.Transform(updateEnvWithDBSecretName(prop))
+	assert.NilError(t, err)
+
+	err = runtime.DefaultUnstructuredConverter.FromUnstructured(manifest.Resources()[0].Object, deployment)
+	assert.NilError(t, err)
+
+	containerFound := false
+	for _, container := range deployment.Spec.Template.Spec.Containers {
+		if container.Name != apiContainerName {
+			continue
+		}
+		containerFound = true
+		// verify api container env reference custom db secret key and name
+		for envKeyName := range ContainerEnvKeys {
+			envFound := false
+			for _, _env := range container.Env {
+				if _env.Name == envKeyName {
+					envFound = true
+					assert.Equal(t, dbSecretName, _env.ValueFrom.SecretKeyRef.LocalObjectReference.Name)
+				}
+				if _env.Name == DB_USER {
+					assert.Equal(t, "user1", _env.ValueFrom.SecretKeyRef.Key)
+				}
+				if _env.Name == DB_PASSWORD {
+					assert.Equal(t, "random-password", _env.ValueFrom.SecretKeyRef.Key)
+				}
+
+			}
+			assert.Equal(t, true, envFound, fmt.Sprintf("secret name %s not found in env:%s", dbSecretName, envKeyName))
+		}
+
 	}
 	assert.Equal(t, true, containerFound, "container not found")
 }

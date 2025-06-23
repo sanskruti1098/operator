@@ -112,6 +112,78 @@ release_yaml() {
     echo ""
 }
 
+
+# Function to install yq if not available
+install_yq() {
+  if ! command -v yq &> /dev/null; then
+    echo "yq not found, installing..."
+    curl -L https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -o /usr/local/bin/yq
+    chmod +x /usr/local/bin/yq
+    echo "yq installed successfully"
+  else
+    echo "yq is already available"
+  fi
+}
+
+# release_yaml_github <component>
+release_yaml_github() {
+  local github_component version releaseFileName destFileName component url
+
+  component=$1
+  echo fetching $component release yaml from github
+
+  # Install yq if not available
+  install_yq
+
+  github_component=$(yq .$component.github ${CONFIG})
+  version=$(yq .$component.version ${CONFIG})
+  releaseFileName=release-$version.yaml
+  destFileName=$releaseFileName
+
+  echo "$github_component version is $version"
+  case $version in
+    latest)
+      dirVersion=$(curl -sL https://api.github.com/repos/$github_component/releases | jq -r ".[].tag_name" | sort -Vr | head -n1)
+      ;;
+    *)
+      dirVersion=${version/v/}
+      ;;
+  esac
+  url="https://github.com/$github_component/releases/download/${version}/${releaseFileName}"
+  echo "URL to download Release YAML is : $url"
+
+    ko_data=${SCRIPT_DIR}/cmd/${TARGET}/operator/kodata
+    comp_dir=${ko_data}/${component}
+    dirPath=${comp_dir}/${dirVersion}
+
+    # destination file
+    dest=${dirPath}/${destFileName}
+    echo $dest
+
+    if [ -f "$dest" ] && [ $FORCE_FETCH_RELEASE = "false" ]; then
+      label="app.kubernetes.io/version: \"$version\""
+      label2="app.kubernetes.io/version: $version"
+      label3="version: \"$version\""
+      if grep -Eq "$label" $dest || grep -Eq "$label2" $dest || grep -Eq "$label3" $dest;
+      then
+          echo "release file already exist with required version, skipping!"
+          echo ""
+          return
+      fi
+    fi
+
+    # create a directory
+    mkdir -p ${dirPath} || true
+
+    http_response=$(curl -s -L -o ${dest} -w "%{http_code}" ${url})
+    if [[ $http_response != "200" ]]; then
+        echo "Error: failed to get $component yaml, status code: $http_response"
+        exit 1
+    fi
+    echo "Info: Added $component/$releaseFileName:$version release yaml !!"
+
+}
+
 # release_yaml_pac <component> <release-yaml-name> <version>
 release_yaml_pac() {
     echo fetching '|' component: ${1} '|' file: ${2} '|' version: ${3}
@@ -270,10 +342,10 @@ release_yaml_hub() {
 
 fetch_openshift_addon_tasks() {
   fetch_addon_task_script="${SCRIPT_DIR}/hack/openshift"
-  local dest_dir="cmd/openshift/operator/kodata/tekton-addon/addons/02-clustertasks/source_external"
-  ${fetch_addon_task_script}/fetch-tektoncd-catalog-tasks.sh ${dest_dir}
-  dest_dir='cmd/openshift/operator/kodata/tekton-addon/addons/07-ecosystem'
-  ${fetch_addon_task_script}/fetch-tektoncd-catalog-tasks.sh ${dest_dir} "ecosystem"
+  local dest_dir='cmd/openshift/operator/kodata/tekton-addon/addons/06-ecosystem/tasks'
+  ${fetch_addon_task_script}/fetch-tektoncd-catalog-tasks.sh ${dest_dir} "ecosystem_tasks"
+  dest_dir='cmd/openshift/operator/kodata/tekton-addon/addons/06-ecosystem/stepactions'
+  ${fetch_addon_task_script}/fetch-tektoncd-catalog-tasks.sh ${dest_dir} "ecosystem_stepactions"
 }
 
 copy_pruner_yaml() {
@@ -330,6 +402,7 @@ main() {
 
   # copy pruner rbac/sa yaml
   copy_pruner_yaml
+  release_yaml_github pruner
 
   echo updated payload tree
   find cmd/${TARGET}/operator/kodata

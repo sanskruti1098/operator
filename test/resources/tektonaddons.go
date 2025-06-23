@@ -96,13 +96,13 @@ func AssertTektonAddonCRReadyStatus(t *testing.T, clients *utils.Clients, names 
 
 // AssertTektonInstallerSets verifies if the TektonInstallerSets are created.
 func AssertTektonInstallerSets(t *testing.T, clients *utils.Clients) {
-	assertInstallerSets(t, clients, tektonaddon.CommunityClusterTaskInstallerSet)
-	assertInstallerSets(t, clients, tektonaddon.ClusterTaskInstallerSet)
-	assertInstallerSets(t, clients, tektonaddon.VersionedClusterTaskInstallerSet)
 	assertInstallerSets(t, clients, tektonaddon.PipelinesTemplateInstallerSet)
+	assertInstallerSets(t, clients, tektonaddon.ResolverTaskInstallerSet)
+	assertInstallerSets(t, clients, tektonaddon.ResolverStepActionInstallerSet)
 	assertInstallerSets(t, clients, tektonaddon.TriggersResourcesInstallerSet)
 	assertInstallerSets(t, clients, tektonaddon.ConsoleCLIInstallerSet)
 	assertInstallerSets(t, clients, tektonaddon.MiscellaneousResourcesInstallerSet)
+	assertInstallerSets(t, clients, tektonaddon.CommunityResolverTaskInstallerSet)
 }
 
 func assertInstallerSets(t *testing.T, clients *utils.Clients, component string) {
@@ -141,7 +141,10 @@ func TektonAddonCRDelete(t *testing.T, clients *utils.Clients, crNames utils.Res
 	if err != nil {
 		t.Fatal("Timed out waiting on TektonAddon to delete", err)
 	}
-	_, b, _, _ := runtime.Caller(0)
+	_, b, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("Failed to get caller information")
+	}
 	m, err := mfc.NewManifest(filepath.Join((filepath.Dir(b)+"/.."), "manifests/"), clients.Config)
 	if err != nil {
 		t.Fatal("Failed to load manifest", err)

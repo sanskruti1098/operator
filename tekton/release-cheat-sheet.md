@@ -11,69 +11,70 @@ need a checkout of the operator repo, a terminal window and a text editor.
 ## Setting up Release Branch
 
 1. Select the commit you would like to build the release from, most likely the most recent commit
-   at https://github.com/tektoncd/operator/commits/main
+   at [https://github.com/tektoncd/operator/commits/main](https://github.com/tektoncd/operator/commits/main) 
    and note the commit's hash.
 
-2. Define the version of the operator. At present, for each release we increment the minor version of operator. For more
-   details, refer [Tektoncd Operator Release](../docs/release/README.md). eg: `0.62.0` or `0.62.1` (patch release)
+2. For each release, we increment the minor version of the operator. For more details, 
+   refer to [Tektoncd Operator Release](../docs/release/README.md). 
+   Example versions: `0.62.0` (minor release) or `0.62.1` (patch release).
 
-   Set the version in a variable.
+   Set the version and old version in a variable.
 
-    ```bash
+   ```bash
     TEKTON_RELEASE_VERSION=v0.62.0
    ```
 
-3. Set the release branch name
 
-   **minor version release vs patch release:**
-    1. If this is a **new minor version release** create a new branch from either the head of `#main` branch if the
-       commit identified in step1.
-
-       ```bash
-   TEKTON_RELEASE_BRANCH=release-v0.62.x git checkout -b ${TEKTON_RELEASE_BRANCH}
-   ```
-    2. If this is a **patch release** make sure that the correct branch is checkout. eg: If we are making release
-       v0.62.1, then make sure the `release-v0.62.x` is checked out.
-
-5. Make sure the Tektoncd Component versions are the one you want, in
+3. Make sure the Tektoncd Component versions are the one you want, in
    `components.yaml`. Those are kept up-to-date by our bots, but just
    in case.
 
-6. minor version release vs patch release:
-    1. if this is a minor version release push the branch to `github.com/tektoncd/operator`
 
-    ```bash
-    git push tektoncd ${TEKTON_RELEASE_BRANCH}
-    ```
+4. Set the release branch and update yaml files
+   
+   1. **For Minor Version Release:** Use the script to create and set up the release branch. Example
+      ```bash
+         TEKTON_RELEASE_BRANCH=release-v0.62.x
+         # ./hack/release-setup-branch.sh <old release version> <new release version>
+         ./hack/release-setup-branch.sh devel ${TEKTON_RELEASE_VERSION}
+      ```
+      The script will automatically create a new branch for the minor version (e.g., release-v0.62.x) and switch to it.
+      It updates the yaml files with the TEKTON_RELEASE_VERSION
+   
+   1. **For Patch Version Release:** Use the script to set up the release branch. Example
+      ```bash
+         TEKTON_RELEASE_BRANCH=release-v0.62.x
+         # ./hack/release-setup-branch.sh <old release patch version> <new release patch version>
+         ./hack/release-setup-branch.sh 0.62.0 0.62.1
+      ```
+      The script will automatically switch to the branch version. It updates the yaml files with the new release patch version.
+      It convey the user to create a PR with patch changes to the release branch
 
-    2. if this is a patch release, make a pull request to the appropriate minor version release branch (eg:
-       release-v0.62.x)
-       and get it merged before continuing to the next section.
+5. **For Patch Version Release:** Ensure that the pull request created earlier has been merged before proceeding.
+
+6. Update Helm charts with the new version. If applicable, update CRDs in the charts with new types.  
+   ```bash
+   # Update labels in YAML files under templates directory
+   find charts/tekton-operator/templates -type f -name '*.yaml' -exec sed -i "s/operator\.tekton\.dev\/release: \"devel\"/operator.tekton.dev\/release: ${TEKTON_RELEASE_VERSION}/g" {} +
+   find charts/tekton-operator/templates -type f -name '*.yaml' -exec sed -i "s/version: \"devel\"/version: ${TEKTON_RELEASE_VERSION}/g" {} +
+
+   # Update Chart.yaml
+   sed -i "s/^version: \"devel\"/version: ${TEKTON_RELEASE_VERSION#v}/" charts/tekton-operator/Chart.yaml
+   sed -i "s/^appVersion: \"devel\"/appVersion: ${TEKTON_RELEASE_VERSION}/" charts/tekton-operator/Chart.yaml
+   ```
+
+7. Update Helm chart with latest changes and create a pull request for merging into the new branch.
 
 ## Running Release Pipeline
 
 1. [Setup a context to connect to the dogfooding cluster](#setup-dogfooding-context) if you haven't already.
 
-2`cd` to root of Operator git checkout.
+2. `cd` to root of Operator git checkout.
 
-3. Make sure the release `Task` and `Pipeline` are up-to-date on the
-   cluster. To do that, you can use `kustomize`:
-   
+3. set commit SHA from TEKTON_RELEASE_BRANCH
    ```bash
-   kustomize build tekton | kubectl replace -f -
+   TEKTON_RELEASE_GIT_SHA=$(git rev-parse upstream/${TEKTON_RELEASE_BRANCH})
    ```
-
-    - [publish-operator-release](https://github.com/tektoncd/operator/blob/main/tekton/build-publish-images-manifests.yaml)
-
-      This task uses [ko](https://github.com/google/ko) to build all container images we release and generate
-      the `release.yaml`
-      ```shell script
-      kubectl apply -f tekton/bases/build-publish-images-manifests.yaml
-      ```
-    - [operator-release](https://github.com/tektoncd/operator/blob/main/tekton/operator-release-pipeline.yaml)
-      ```shell script
-      kubectl apply -f tekton/overlays/versioned-releases/operator-release-pipeline.yaml
-      ```
 
 4. Confirm commit SHA matches what you want to release.
 
@@ -81,7 +82,7 @@ need a checkout of the operator repo, a terminal window and a text editor.
     git show $TEKTON_RELEASE_GIT_SHA
     ```
 
-6. Create a workspace template file:
+5. Create a workspace template file:
 
    ```bash
    cat <<EOF > workspace-template.yaml
@@ -94,30 +95,36 @@ need a checkout of the operator repo, a terminal window and a text editor.
    EOF
    ```
 
-7. Execute the release pipeline.
+6. Execute the release pipeline.
 
     ```bash
     tkn --context dogfooding pipeline start operator-release \
+        --filename=tekton/operator-release-pipeline.yaml \
         --serviceaccount=release-right-meow \
-        --param=components=components.yaml \
-        --param=gitRevision="${TEKTON_RELEASE_GIT_SHA}" \
-        --param=versionTag="${TEKTON_RELEASE_VERSION}" \
-        --param=serviceAccountPath=release.json \
-        --param=releaseBucket=gs://tekton-releases/operator \
-        --param=imageRegistry=gcr.io \
-        --param=imageRegistryPath=tekton-releases  \
-        --param=releaseAsLatest=true \
-        --param=platforms=linux/amd64,linux/arm64,linux/s390x,linux/ppc64le \
-        --param=kubeDistros="kubernetes openshift" \
-        --param=package=github.com/tektoncd/operator \
+        --param package=github.com/tektoncd/operator \
+        --param components=components.yaml \
+        --param gitRevision="${TEKTON_RELEASE_GIT_SHA}" \
+        --param imageRegistry=ghcr.io \
+        --param imageRegistryPath=tektoncd/operator  \
+        --param imageRegistryRegions="" \
+        --param imageRegistryUser=tekton-robot \
+        --param serviceAccountPath=release.json \
+        --param serviceAccountImagesPath=credentials \
+        --param versionTag="${TEKTON_RELEASE_VERSION}" \
+        --param releaseBucket=gs://tekton-releases/operator \
+        --param koExtraArgs="" \
+        --param releaseAsLatest=true \
+        --param platforms=linux/amd64,linux/arm64,linux/s390x,linux/ppc64le \
+        --param kubeDistros="kubernetes openshift" \
         --workspace name=release-secret,secret=release-secret \
+        --workspace name=release-images-secret,secret=ghcr-creds \
         --workspace name=workarea,volumeClaimTemplateFile=workspace-template.yaml \
         --pipeline-timeout 2h0m0s
     ```
 
-8. Watch logs of resulting PipelineRun.
+7. Watch logs of resulting PipelineRun.
 
-9. Once the pipeline is complete, check its results:
+8. Once the pipeline is complete, check its results:
 
    ```bash
    tkn pr describe <pipeline-run-name>
@@ -158,7 +165,7 @@ need a checkout of the operator repo, a terminal window and a text editor.
       -p git-revision="$TEKTON_RELEASE_GIT_SHA" \
       -p release-tag="${TEKTON_RELEASE_VERSION}" \
       -p previous-release-tag="${TEKTON_OLD_VERSION}" \
-      -p release-name="" \
+      -p release-name="${TEKTON_RELEASE_NAME}" \
       -p bucket="gs://tekton-releases/operator" \
       -p rekor-uuid="" \
       release-draft
@@ -176,6 +183,11 @@ need a checkout of the operator repo, a terminal window and a text editor.
     1. Publish the GitHub release once all notes are correct and in order.
 
 2. Edit `README.md` on `master` branch, add entry to docs table with latest release links.
+   In README.md, update the supported versions and end-of-life sections:
+
+   Add ${TEKTON_RELEASE_VERSION} under the Supported Versions section (### In Support).
+   Move the previous version to the End of Life section (### End of Life).
+
 
 3. Push & make PR for updated `README.md`
 
@@ -189,6 +201,7 @@ need a checkout of the operator repo, a terminal window and a text editor.
 5. Announce the release in Slack channels #general and #pipelines.
 
 Congratulations, you're done!
+   
 
 ## Setup dogfooding context
 
@@ -211,3 +224,14 @@ Congratulations, you're done!
     ```bash
     kubectl config use-context my-dev-cluster
     ```
+
+## Ensure documentation is updated
+   In the https://github.com/tektoncd/website.git repository, under sync/config/operator.yaml,
+   ensure that you add a section for the new ${TEKTON_RELEASE_VERSION} version.
+
+## Add operator to operatorhub
+   This process is typically done for minor releases, but not for patch releases.
+   1. Under the https://github.com/k8s-operatorhub/community-operators.git repository, follow these instructions:
+   2. Walk through the file /operatorhub/kubernetes/README.md to generate the bundle.
+   3. Copy the bundle generated to your local community-operators repository.
+   4. After completing the steps to generate and copy the bundle, create a pull request against the community-operators repository

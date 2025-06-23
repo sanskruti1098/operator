@@ -17,8 +17,7 @@ limitations under the License.
 package common
 
 import (
-	"context"
-	"fmt"
+	"errors"
 	"strings"
 
 	"github.com/tektoncd/operator/pkg/apis/operator/v1alpha1"
@@ -39,17 +38,29 @@ func PipelineReady(informer informer.TektonPipelineInformer) (*v1alpha1.TektonPi
 	ppln, err := getPipelineRes(informer)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
-			return nil, fmt.Errorf(PipelineNotFound)
+			return nil, errors.New(PipelineNotFound)
 		}
 		return nil, err
 	}
-	if ppln.GetStatus() != nil && strings.Contains(ppln.GetStatus().GetCondition(apis.ConditionReady).Message, v1alpha1.UpgradePending) {
+	if isUpgradePending(ppln.GetStatus()) {
 		return nil, v1alpha1.DEPENDENCY_UPGRADE_PENDING_ERR
 	}
 	if !ppln.Status.IsReady() {
-		return nil, fmt.Errorf(PipelineNotReady)
+		return nil, errors.New(PipelineNotReady)
 	}
 	return ppln, nil
+}
+
+// isUpgradePending checks if the component status indicates an upgrade is pending
+func isUpgradePending(status v1alpha1.TektonComponentStatus) bool {
+	if status == nil {
+		return false
+	}
+	readyCondition := status.GetCondition(apis.ConditionReady)
+	if readyCondition == nil {
+		return false
+	}
+	return strings.Contains(readyCondition.Message, v1alpha1.UpgradePending)
 }
 
 func PipelineTargetNamspace(informer informer.TektonPipelineInformer) (string, error) {
@@ -72,7 +83,7 @@ func TriggerReady(informer informer.TektonTriggerInformer) (*v1alpha1.TektonTrig
 	trigger, err := getTriggerRes(informer)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
-			return nil, fmt.Errorf(TriggerNotFound)
+			return nil, errors.New(TriggerNotFound)
 		}
 		return nil, err
 	}
@@ -80,7 +91,7 @@ func TriggerReady(informer informer.TektonTriggerInformer) (*v1alpha1.TektonTrig
 		return nil, v1alpha1.DEPENDENCY_UPGRADE_PENDING_ERR
 	}
 	if !trigger.Status.IsReady() {
-		return nil, fmt.Errorf(TriggerNotReady)
+		return nil, errors.New(TriggerNotReady)
 	}
 	return trigger, nil
 }
@@ -88,20 +99,4 @@ func TriggerReady(informer informer.TektonTriggerInformer) (*v1alpha1.TektonTrig
 func getTriggerRes(informer informer.TektonTriggerInformer) (*v1alpha1.TektonTrigger, error) {
 	res, err := informer.Lister().Get(v1alpha1.TriggerResourceName)
 	return res, err
-}
-
-func CheckUpgradePending(tc v1alpha1.TektonComponent) (bool, error) {
-	labels := tc.GetLabels()
-	ver, ok := labels[v1alpha1.ReleaseVersionKey]
-	if !ok {
-		return true, nil
-	}
-	operatorVersion, err := OperatorVersion(context.TODO())
-	if err != nil {
-		return false, err
-	}
-	if ver != operatorVersion {
-		return true, nil
-	}
-	return false, nil
 }

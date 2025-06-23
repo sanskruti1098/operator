@@ -18,21 +18,25 @@ package common
 
 import (
 	"context"
-	"log"
+	"fmt"
 	"os"
 	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 
 	mf "github.com/manifestival/manifestival"
 	"github.com/tektoncd/operator/pkg/apis/operator/v1alpha1"
+	"go.uber.org/zap"
 	"golang.org/x/exp/slices"
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	apimachineryRuntime "k8s.io/apimachinery/pkg/runtime"
 	"knative.dev/pkg/logging"
 	"knative.dev/pkg/ptr"
 )
@@ -46,17 +50,19 @@ const (
 	PacImagePrefix                = "IMAGE_PAC_"
 	ChainsImagePrefix             = "IMAGE_CHAINS_"
 	ManualApprovalGatePrefix      = "IMAGE_MAG_"
+	PrunerImagePrefix             = "IMAGE_PRUNER_"
 	ResultsImagePrefix            = "IMAGE_RESULTS_"
 	HubImagePrefix                = "IMAGE_HUB_"
+	DashboardImagePrefix          = "IMAGE_DASHBOARD_"
+
+	DefaultTargetNamespace = "tekton-pipelines"
 
 	ArgPrefix   = "arg_"
 	ParamPrefix = "param_"
 
-	resultAPIDeployment     = "tekton-results-api"
-	resultWatcherDeployment = "tekton-results-watcher"
-
 	runAsNonRootValue              = true
 	allowPrivilegedEscalationValue = false
+	pipelinesControllerDeployment  = "tekton-pipelines-controller"
 )
 
 // transformers that are common to all components.
@@ -308,7 +314,8 @@ func SplitsByEqual(arg string) ([]string, bool) {
 }
 
 // TaskImages replaces step and params images.
-func TaskImages(images map[string]string) mf.Transformer {
+func TaskImages(ctx context.Context, images map[string]string) mf.Transformer {
+	logger := logging.FromContext(ctx)
 	return func(u *unstructured.Unstructured) error {
 		if u.GetKind() != "ClusterTask" && u.GetKind() != "Task" {
 			return nil
@@ -321,7 +328,7 @@ func TaskImages(images map[string]string) mf.Transformer {
 		if !found {
 			return nil
 		}
-		replaceStepsImages(steps, images)
+		replaceStepsImages(steps, images, logger)
 		err = unstructured.SetNestedField(u.Object, steps, "spec", "steps")
 		if err != nil {
 			return err
@@ -334,47 +341,73 @@ func TaskImages(images map[string]string) mf.Transformer {
 		if !found {
 			return nil
 		}
-		replaceParamsImage(params, images)
-		err = unstructured.SetNestedField(u.Object, params, "spec", "params")
-		if err != nil {
-			return err
-		}
-		return nil
+		replaceParamsImage(params, images, logger)
+		return unstructured.SetNestedField(u.Object, params, "spec", "params")
 	}
 }
 
-func replaceStepsImages(steps []interface{}, override map[string]string) {
+// StepActionImages replaces spec images.
+func StepActionImages(ctx context.Context, images map[string]string) mf.Transformer {
+	logger := logging.FromContext(ctx)
+	return func(u *unstructured.Unstructured) error {
+		stepActionSpec, found, err := unstructured.NestedMap(u.Object, "spec")
+		if err != nil {
+			return err
+		}
+		if !found {
+			return nil
+		}
+		replaceStepActionImages(stepActionSpec, images, u.GetName(), logger)
+		return unstructured.SetNestedMap(u.Object, stepActionSpec, "spec")
+	}
+}
+
+func replaceStepActionImages(stepActionSpec map[string]interface{}, override map[string]string, name string, logger *zap.SugaredLogger) {
+	name = formKey("", name)
+	image, found := override[name]
+	if !found || image == "" {
+		logger.Debugf("Image not found in stepaction %s action skip", name)
+		return
+	}
+	// Replace the image in the stepActionSpec if the key exists.
+	if _, ok := stepActionSpec["image"]; ok {
+		logger.Debugf("replacing image with %s", image)
+		stepActionSpec["image"] = image
+	}
+}
+
+func replaceStepsImages(steps []interface{}, override map[string]string, logger *zap.SugaredLogger) {
 	for _, s := range steps {
 		step := s.(map[string]interface{})
 		name, ok := step["name"].(string)
 		if !ok {
-			log.Println("Unable to get the step", "step", s)
+			logger.Debugf("Unable to get the step %v step", s)
 			continue
 		}
 
 		name = formKey("", name)
 		image, found := override[name]
 		if !found || image == "" {
-			log.Println("Image not found", "step", name, "action", "skip")
+			logger.Debugf("Image not found step %s action skip", name)
 			continue
 		}
 		step["image"] = image
 	}
 }
 
-func replaceParamsImage(params []interface{}, override map[string]string) {
+func replaceParamsImage(params []interface{}, override map[string]string, logger *zap.SugaredLogger) {
 	for _, p := range params {
 		param := p.(map[string]interface{})
 		name, ok := param["name"].(string)
 		if !ok {
-			log.Println("Unable to get the pram", "param", p)
+			logger.Debugf("Unable to get the pram %v param", p)
 			continue
 		}
 
 		name = formKey(ParamPrefix, name)
 		image, found := override[name]
 		if !found || image == "" {
-			log.Println("Image not found", "step", name, "action", "skip")
+			logger.Debugf("Image not found step %s action skip", name)
 			continue
 		}
 		param["default"] = image
@@ -443,7 +476,7 @@ func injectNamespaceClusterRole(targetNamespace string) mf.Transformer {
 			if containsNamespaceResource && ok {
 				nm := []interface{}{}
 				for _, rn := range resourceNames.([]interface{}) {
-					if rn.(string) == "tekton-pipelines" {
+					if rn.(string) == DefaultTargetNamespace {
 						nm = append(nm, targetNamespace)
 					} else {
 						nm = append(nm, rn)
@@ -456,10 +489,10 @@ func injectNamespaceClusterRole(targetNamespace string) mf.Transformer {
 	}
 }
 
-// ReplaceNamespaceInDeploymentEnv replaces namespace in deployment's env var
-func ReplaceNamespaceInDeploymentEnv(targetNamespace string) mf.Transformer {
+// ReplaceNamespaceInDeploymentEnv replaces any instance of the default namespace string in the given deployments' env var
+func ReplaceNamespaceInDeploymentEnv(deploymentNames []string, targetNamespace string) mf.Transformer {
 	return func(u *unstructured.Unstructured) error {
-		if u.GetKind() != "Deployment" || !(u.GetName() == resultAPIDeployment || u.GetName() == resultWatcherDeployment) {
+		if u.GetKind() != "Deployment" || !slices.Contains(deploymentNames, u.GetName()) {
 			return nil
 		}
 
@@ -487,16 +520,16 @@ func replaceNamespaceInDBAddress(envs []corev1.EnvVar, targetNamespace string) [
 
 	for i, e := range envs {
 		if slices.Contains(req, e.Name) {
-			envs[i].Value = strings.ReplaceAll(e.Value, "tekton-pipelines", targetNamespace)
+			envs[i].Value = strings.ReplaceAll(e.Value, DefaultTargetNamespace, targetNamespace)
 		}
 	}
 	return envs
 }
 
-// ReplaceNamespaceInDeploymentArgs replaces namespace in deployment's args
-func ReplaceNamespaceInDeploymentArgs(targetNamespace string) mf.Transformer {
+// ReplaceNamespaceInDeploymentArgs replaces any instance of the default namespace in the given deployments' args
+func ReplaceNamespaceInDeploymentArgs(deploymentNames []string, targetNamespace string) mf.Transformer {
 	return func(u *unstructured.Unstructured) error {
-		if u.GetKind() != "Deployment" || u.GetName() != resultWatcherDeployment {
+		if u.GetKind() != "Deployment" || !slices.Contains(deploymentNames, u.GetName()) {
 			return nil
 		}
 
@@ -521,8 +554,8 @@ func ReplaceNamespaceInDeploymentArgs(targetNamespace string) mf.Transformer {
 
 func replaceNamespaceInContainerArg(container *corev1.Container, targetNamespace string) {
 	for i, a := range container.Args {
-		if strings.Contains(a, "tekton-pipelines") {
-			container.Args[i] = strings.ReplaceAll(a, "tekton-pipelines", targetNamespace)
+		if strings.Contains(a, DefaultTargetNamespace) {
+			container.Args[i] = strings.ReplaceAll(a, DefaultTargetNamespace, targetNamespace)
 		}
 	}
 }
@@ -938,4 +971,248 @@ func ReplaceNamespace(newNamespace string) mf.Transformer {
 
 		return nil
 	}
+}
+
+// AddSecretData adds the given data and annotations to the Secret object.
+func AddSecretData(data map[string][]byte, annotations map[string]string) mf.Transformer {
+	return func(u *unstructured.Unstructured) error {
+		// If input data is empty, do not transform
+		if len(data) == 0 {
+			return nil
+		}
+
+		// Check if the resource is a Secret
+		if u.GetKind() != "Secret" {
+			return nil
+		}
+
+		// Convert unstructured to Secret
+		secret := &corev1.Secret{}
+		err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, secret)
+		if err != nil {
+			return err
+		}
+
+		// Update the Secret's data only if it is nil or empty
+		if len(secret.Data) == 0 {
+			secret.Data = data
+		}
+
+		// Update the Secret's annotations
+		if secret.Annotations == nil {
+			secret.Annotations = make(map[string]string)
+		}
+		for key, value := range annotations {
+			secret.Annotations[key] = value
+		}
+
+		// Convert back to unstructured
+		unstrObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(secret)
+		if err != nil {
+			return err
+		}
+
+		// Update the original unstructured object
+		u.SetUnstructuredContent(unstrObj)
+
+		return nil
+	}
+}
+
+// ConvertDeploymentToStatefulSet converts a Deployment to a StatefulSet with given parameters
+func ConvertDeploymentToStatefulSet(controllerName, serviceName string) mf.Transformer {
+	return func(u *unstructured.Unstructured) error {
+		if u.GetKind() != "Deployment" || u.GetName() != controllerName {
+			return nil
+		}
+
+		d := &appsv1.Deployment{}
+		err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, d)
+		if err != nil {
+			return err
+		}
+
+		ss := &appsv1.StatefulSet{
+			TypeMeta: metav1.TypeMeta{
+				Kind:       "StatefulSet",
+				APIVersion: appsv1.SchemeGroupVersion.Group + "/" + appsv1.SchemeGroupVersion.Version,
+			},
+			ObjectMeta: d.ObjectMeta,
+			Spec: appsv1.StatefulSetSpec{
+				Selector:    d.Spec.Selector,
+				ServiceName: serviceName,
+				Template:    d.Spec.Template,
+				Replicas:    d.Spec.Replicas,
+				UpdateStrategy: appsv1.StatefulSetUpdateStrategy{
+					Type: appsv1.RollingUpdateStatefulSetStrategyType,
+				},
+			},
+		}
+
+		unstrObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(ss)
+		if err != nil {
+			return err
+		}
+
+		u.SetUnstructuredContent(unstrObj)
+
+		return nil
+	}
+}
+
+// AddStatefulEnvVars adds environment variables to the statefulset based on given parameters
+func AddStatefulEnvVars(controllerName, serviceName, statefulServiceEnvVar, controllerOrdinalEnvVar string) mf.Transformer {
+	return func(u *unstructured.Unstructured) error {
+		if u.GetKind() != "StatefulSet" || u.GetName() != controllerName {
+			return nil
+		}
+
+		ss := &appsv1.StatefulSet{}
+		err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, ss)
+		if err != nil {
+			return err
+		}
+
+		newEnvVars := []corev1.EnvVar{
+			{
+				Name:  statefulServiceEnvVar,
+				Value: serviceName,
+			},
+			{
+				Name: controllerOrdinalEnvVar,
+				ValueFrom: &corev1.EnvVarSource{
+					FieldRef: &corev1.ObjectFieldSelector{
+						FieldPath: "metadata.name",
+					},
+				},
+			},
+		}
+
+		if len(ss.Spec.Template.Spec.Containers) > 0 {
+			ss.Spec.Template.Spec.Containers[0].Env = append(ss.Spec.Template.Spec.Containers[0].Env, newEnvVars...)
+		}
+
+		unstrObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(ss)
+		if err != nil {
+			return err
+		}
+
+		u.SetUnstructuredContent(unstrObj)
+
+		return nil
+	}
+}
+
+// updates performance flags/args into deployment and container given as args
+// and leader election config as pod labels into a Deployment, ensuring that any changes trigger a rollout.
+// It also updates the replica count if specified in the performanceSpec.
+func UpdatePerformanceFlagsInDeploymentAndLeaderConfigMap(performanceSpec *v1alpha1.PerformanceProperties, leaderConfig, deploymentName, containerName string) mf.Transformer {
+	return func(u *unstructured.Unstructured) error {
+		if u.GetKind() != "Deployment" || u.GetName() != deploymentName {
+			return nil
+		}
+
+		// holds the flags needs to be added in the container args section
+		flags := map[string]interface{}{}
+
+		// convert struct to map with json tag
+		// so that, we can map the arguments as is
+		if err := StructToMap(&performanceSpec.DeploymentPerformanceArgs, &flags); err != nil {
+			return err
+		}
+
+		// if there is no flags to update, return from here
+		if len(flags) == 0 {
+			return nil
+		}
+
+		// convert unstructured object to deployment
+		dep := &appsv1.Deployment{}
+		err := apimachineryRuntime.DefaultUnstructuredConverter.FromUnstructured(u.Object, dep)
+		if err != nil {
+			return err
+		}
+
+		// include config-leader-election data into deployment pod label
+		// so that pods will be recreated, if there is a change in "buckets"
+		leaderElectionConfigMapData := map[string]interface{}{}
+		if err = StructToMap(&performanceSpec.PerformanceLeaderElectionConfig, &leaderElectionConfigMapData); err != nil {
+			return err
+		}
+		podLabels := dep.Spec.Template.Labels
+		if podLabels == nil {
+			podLabels = map[string]string{}
+		}
+		// sort data keys in an order, to get the consistent hash value in installerset
+		labelKeys := getSortedKeys(leaderElectionConfigMapData)
+		for _, key := range labelKeys {
+			value := leaderElectionConfigMapData[key]
+			labelKey := fmt.Sprintf("%s.data.%s", leaderConfig, key)
+			podLabels[labelKey] = fmt.Sprintf("%v", value)
+		}
+		dep.Spec.Template.Labels = podLabels
+
+		// update replicas, if available
+		if performanceSpec.Replicas != nil {
+			dep.Spec.Replicas = ptr.Int32(*performanceSpec.Replicas)
+		}
+
+		// include it in the pods label, that will recreate all the pods, if there is a change in replica count
+		if dep.Spec.Replicas != nil {
+			dep.Spec.Template.Labels["deployment.spec.replicas"] = fmt.Sprintf("%d", *dep.Spec.Replicas)
+		}
+
+		// sort flag keys in an order, to get the consistent hash value in installerset
+		flagKeys := getSortedKeys(flags)
+		// update performance arguments into target container
+		for containerIndex, container := range dep.Spec.Template.Spec.Containers {
+			if container.Name != containerName {
+				continue
+			}
+			for _, flagKey := range flagKeys {
+				// update the arg name with "-" prefix
+				expectedArg := fmt.Sprintf("-%s", flagKey)
+				argStringValue := fmt.Sprintf("%v", flags[flagKey])
+
+				// skip deprecated disable-ha flag if not pipelinesControllerDeployment
+				// should be removed when the flag is removed from pipelines controller
+				// we can use this logic incase we need to skip it for other controllers as well here
+				if deploymentName != pipelinesControllerDeployment && flagKey == "disable-ha" {
+					continue
+				}
+
+				argUpdated := false
+				for argIndex, existingArg := range container.Args {
+					if strings.HasPrefix(existingArg, expectedArg) {
+						container.Args[argIndex] = fmt.Sprintf("%s=%s", expectedArg, argStringValue)
+						argUpdated = true
+						break
+					}
+				}
+				if !argUpdated {
+					container.Args = append(container.Args, fmt.Sprintf("%s=%s", expectedArg, argStringValue))
+				}
+			}
+			dep.Spec.Template.Spec.Containers[containerIndex] = container
+		}
+
+		// convert deployment to unstructured object
+		obj, err := apimachineryRuntime.DefaultUnstructuredConverter.ToUnstructured(dep)
+		if err != nil {
+			return err
+		}
+		u.SetUnstructuredContent(obj)
+
+		return nil
+	}
+}
+
+// sort keys in an order, to get the consistent hash value in installerset
+func getSortedKeys(input map[string]interface{}) []string {
+	keys := []string{}
+	for key := range input {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }

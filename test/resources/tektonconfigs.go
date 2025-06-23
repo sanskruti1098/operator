@@ -79,7 +79,7 @@ func EnsureTektonConfigExists(kubeClientSet *kubernetes.Clientset, clients opera
 							Value: "true",
 						},
 						{
-							Name:  "communityClusterTasks",
+							Name:  "communityResolverTasks",
 							Value: "true",
 						},
 					},
@@ -146,7 +146,10 @@ func EnsureNoTektonConfigInstance(t *testing.T, clients *utils.Clients, crNames 
 // TektonConfigCRDelete deletes tha TektonConfig to see if all resources will be deleted
 func TektonConfigCRDelete(t *testing.T, clients *utils.Clients, crNames utils.ResourceNames) {
 	EnsureNoTektonConfigInstance(t, clients, crNames)
-	_, b, _, _ := runtime.Caller(0)
+	_, b, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("Failed to get caller information")
+	}
 	m, err := mfc.NewManifest(filepath.Join((filepath.Dir(b)+"/.."), "manifests/"), clients.Config)
 	if err != nil {
 		t.Fatal("Failed to load manifest", err)
@@ -181,6 +184,7 @@ func verifyNoTektonConfigCR(clients *utils.Clients) error {
 }
 
 func WaitForTektonConfigReady(client operatorV1alpha1.TektonConfigInterface, name string, interval, timeout time.Duration) error {
+	readyCount := 0
 	isReady := func(ctx context.Context) (bool, error) {
 		configCR, err := client.Get(context.TODO(), name, metav1.GetOptions{})
 		if err != nil {
@@ -189,7 +193,22 @@ func WaitForTektonConfigReady(client operatorV1alpha1.TektonConfigInterface, nam
 			}
 			return false, err
 		}
-		return configCR.Status.IsReady(), nil
+		if configCR.Status.IsReady() {
+			readyCount++
+		} else {
+			readyCount = 0
+		}
+		// This needs to be confirmed multiple times because:
+		// 1. The previous Pod may have just restarted, and the new Pod has not
+		//    yet entered the Reconcile logic to modify the resource status.
+		// 2. Even if the Pod has started properly, it may not have entered the
+		//    Reconcile logic yet, which could also lead to instability.
+		//    For example:
+		//      In the testing logic of TektonHub, it immediately deletes the
+		//      CR of TektonHub and then polls whether the CR has been cleaned up.
+		//      At this point, the tekton-operator enters the Reconcile logic and
+		//      automatically creates the CR of TektonHub again, causing the test to fail.
+		return readyCount >= 3, nil
 	}
 
 	return wait.PollUntilContextTimeout(context.TODO(), interval, timeout, true, isReady)

@@ -92,7 +92,11 @@ def setParser():
 def baseConfig(args):
     workspace_dir = args.workspace
     if not os.path.isabs(workspace_dir):
-        workspace_dir=os.path.join(os.getcwd(), workspace_dir)
+        script_dir = os.path.dirname(os.path.abspath(__file__))  # Get script directory
+        workspace_dir = os.path.join(script_dir, "..", workspace_dir)  # Adjust path
+
+    print(f"Resolved workspace directory: {workspace_dir}")
+    
     if not os.path.exists(workspace_dir):
         return None, f"workspace-dir: {args.workspace} doesnot exist"
     config_file_path = os.path.join(workspace_dir, "config.yaml")
@@ -232,6 +236,8 @@ def newCSVmods(config):
                 if "addn-annotations" in config.keys():
                     csv['metadata']['annotations'].update(config["addn-annotations"])
                 if "addn-labels" in config.keys():
+                    if "labels" not in csv['metadata']:
+                        csv['metadata']['labels'] = {}
                     csv['metadata']['labels'].update(config["addn-labels"])
 
                 csv_stream.seek(0)

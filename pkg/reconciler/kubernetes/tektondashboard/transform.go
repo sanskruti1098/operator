@@ -26,22 +26,30 @@ import (
 )
 
 const (
-	externalLogsArg = "--external-logs="
+	externalLogsArg         = "--external-logs="
+	dashboardDeploymentName = "tekton-dashboard"
 )
 
 func filterAndTransform(extension common.Extension) client.FilterAndTransform {
 	return func(ctx context.Context, manifest *mf.Manifest, comp v1alpha1.TektonComponent) (*mf.Manifest, error) {
 		dashboard := comp.(*v1alpha1.TektonDashboard)
+		targetNamespace := dashboard.Spec.GetTargetNamespace()
+
+		images := common.ToLowerCaseKeys(common.ImagesFromEnv(common.DashboardImagePrefix))
+
 		trns := extension.Transformers(dashboard)
 		extra := []mf.Transformer{
 			common.InjectOperandNameLabelOverwriteExisting(v1alpha1.OperandTektoncdDashboard),
 			common.AddConfiguration(dashboard.Spec.Config),
 			common.AddDeploymentRestrictedPSA(),
+			common.DeploymentImages(images),
+			common.DeploymentEnvVarKubernetesMinVersion(),
+			common.ReplaceNamespaceInDeploymentArgs([]string{dashboardDeploymentName}, targetNamespace),
 		}
 		trns = append(trns, extra...)
 		if dashboard.Spec.ExternalLogs != "" {
 			updatedExternalLogsArg := externalLogsArg + dashboard.Spec.ExternalLogs
-			trns = append(trns, common.ReplaceDeploymentArg("tekton-dashboard", externalLogsArg, updatedExternalLogsArg))
+			trns = append(trns, common.ReplaceDeploymentArg(dashboardDeploymentName, externalLogsArg, updatedExternalLogsArg))
 		}
 		if err := common.Transform(ctx, manifest, dashboard, trns...); err != nil {
 			return &mf.Manifest{}, err
@@ -49,7 +57,7 @@ func filterAndTransform(extension common.Extension) client.FilterAndTransform {
 
 		// additional options transformer
 		// always execute as last transformer, so that the values in options will be final update values on the manifests
-		if err := common.ExecuteAdditionalOptionsTransformer(ctx, manifest, dashboard.Spec.GetTargetNamespace(), dashboard.Spec.Dashboard.Options); err != nil {
+		if err := common.ExecuteAdditionalOptionsTransformer(ctx, manifest, targetNamespace, dashboard.Spec.Dashboard.Options); err != nil {
 			return &mf.Manifest{}, err
 		}
 

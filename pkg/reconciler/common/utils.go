@@ -27,11 +27,11 @@ import (
 type VersionError error
 
 var (
-	configMapError VersionError = fmt.Errorf("version information could not be determined from ConfigMap")
+	errConfigMap VersionError = fmt.Errorf("version information could not be determined from ConfigMap")
 )
 
 func IsFetchVersionError(err error) bool {
-	return err == configMapError
+	return err == errConfigMap
 }
 
 // FetchVersionFromConfigMap finds the component version from the ConfigMap data field. It looks
@@ -41,7 +41,7 @@ func FetchVersionFromConfigMap(manifest mf.Manifest, configMapName string) (stri
 	configMaps := manifest.Filter(mf.ByKind("ConfigMap"), mf.ByName(configMapName))
 
 	if len(configMaps.Resources()) == 0 {
-		return "", configMapError
+		return "", errConfigMap
 	}
 
 	versionConfigMap := configMaps.Resources()[0]
@@ -52,7 +52,7 @@ func FetchVersionFromConfigMap(manifest mf.Manifest, configMapName string) (stri
 		return version, nil
 	}
 
-	return "", configMapError
+	return "", errConfigMap
 }
 
 // converts struct to map with json encoding
@@ -62,4 +62,13 @@ func StructToMap(in, out interface{}) error {
 		return err
 	}
 	return json.Unmarshal(data, out)
+}
+
+// Helper function to serialize labels map to JSON string
+func SerializeLabelsToJSON(labels map[string]string) (string, error) {
+	bytes, err := json.Marshal(labels)
+	if err != nil {
+		return "", fmt.Errorf("failed to serialize labels to JSON: %v", err)
+	}
+	return string(bytes), nil
 }

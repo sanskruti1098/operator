@@ -23,7 +23,6 @@
   - [Iterating](#iterating)
     - [Install Operator](#install-operator)
   - [Accessing logs](#accessing-logs)
-  - [Updating the clustertasks in OpenShift addons](#updating-the-clustertasks-in-openshift-addons)
   - [Running Codegen](#running-codegen)
   - [Setup development environment on localhost](#setup-development-environment-on-localhost)
     - [Pre-requests](#pre-requests)
@@ -66,7 +65,7 @@ This project extends Kubernetes (aka
 - Install via
   [official installation docs](https://github.com/tektoncd/pipeline/blob/master/docs/install.md)
   or continue though [getting started for development](#getting-started)
-- [Tekton Pipeline "Hello World" tutorial](https://github.com/tektoncd/pipeline/blob/master/docs/tutorial.md) -
+- [Tekton Pipeline "Hello World" tutorial](https://tekton.dev/docs/getting-started) -
   Define `Tasks`, `Pipelines`, and `PipelineResources`, see what happens when
   they are run
 
@@ -206,17 +205,6 @@ watch this space!**
 **Note: this needs to be completed! We don't yet have any code or config to deploy,
 watch this space!**
 
-## Updating the clustertasks in OpenShift addons
-
-You can update the clustertasks present in the codebase with the latest using the script present at `/hack/openshift/update-tasks.sh`
-
-You can edit the script to mention the specific version of the task or to add a new task.
-
-Then all the tasks mentioned in the script can be added to codebase using
-
-```shell
-./hack/openshift/fetch-tektoncd-catalog-tasks.sh cmd/openshift/operator/kodata/tekton-addon/addons/02-clustertasks/source_external
-```
 ## Running Codegen
 
 If the files in `pkg/apis` are updated we need to run `codegen` scripts

@@ -18,6 +18,7 @@ package tektonconfig
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math"
 	"regexp"
@@ -36,6 +37,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/selection"
+	"k8s.io/apimachinery/pkg/types"
 	nsV1 "k8s.io/client-go/informers/core/v1"
 	rbacV1 "k8s.io/client-go/informers/rbac/v1"
 	"k8s.io/client-go/kubernetes"
@@ -64,6 +66,8 @@ const (
 	rbacInstallerSetType        = "rhosp-rbac"
 	rbacInstallerSetNamePrefix  = "rhosp-rbac-"
 	rbacParamName               = "createRbacResource"
+	legacyPipelineRbacParamName = "legacyPipelineRbac"
+	legacyPipelineRbac          = "true"
 	serviceAccountCreationLabel = "openshift-pipelines.tekton.dev/sa-created"
 )
 
@@ -88,6 +92,11 @@ type rbac struct {
 	ownerRef          metav1.OwnerReference
 	version           string
 	tektonConfig      *v1alpha1.TektonConfig
+}
+
+type NamespaceServiceAccount struct {
+	ServiceAccount *corev1.ServiceAccount
+	Namespace      corev1.Namespace
 }
 
 func (r *rbac) cleanUp(ctx context.Context) error {
@@ -144,23 +153,31 @@ func (r *rbac) EnsureRBACInstallerSet(ctx context.Context) (*v1alpha1.TektonInst
 }
 
 func (r *rbac) setDefault() {
-	var (
-		found = false
-	)
 
+	var rbacParamFound, legacyParamFound bool
 	for i, v := range r.tektonConfig.Spec.Params {
 		if v.Name == rbacParamName {
-			found = true
-			// If the value set is invalid then set key to default value as true.
+			rbacParamFound = true
 			if v.Value != "false" && v.Value != "true" {
 				r.tektonConfig.Spec.Params[i].Value = "true"
 			}
-			break
+		}
+		if v.Name == legacyPipelineRbacParamName {
+			legacyParamFound = true
+			if v.Value != "false" && v.Value != "true" {
+				r.tektonConfig.Spec.Params[i].Value = "true"
+			}
 		}
 	}
-	if !found {
+	if !rbacParamFound {
 		r.tektonConfig.Spec.Params = append(r.tektonConfig.Spec.Params, v1alpha1.Param{
 			Name:  rbacParamName,
+			Value: "true",
+		})
+	}
+	if !legacyParamFound {
+		r.tektonConfig.Spec.Params = append(r.tektonConfig.Spec.Params, v1alpha1.Param{
+			Name:  legacyPipelineRbacParamName,
 			Value: "true",
 		})
 	}
@@ -372,14 +389,81 @@ func (r *rbac) handleSCCInNamespace(ctx context.Context, ns *corev1.Namespace) e
 	return nil
 }
 
-func (r *rbac) createResources(ctx context.Context) error {
+// this function encapsulates the logic for processing a single namespace.
+func (r *rbac) processNamespace(ctx context.Context, sa *corev1.ServiceAccount, ns corev1.Namespace) error {
 	logger := logging.FromContext(ctx)
 
-	if err := r.ensurePreRequisites(ctx); err != nil {
-		logger.Errorf("Error validating resources: %v", err)
+	// Inject CA bundle configmap
+	logger.Infow("Inject CA bundle configmap in ", "Namespace", ns.GetName())
+	if err := r.ensureCABundles(ctx, &ns); err != nil {
+		logger.Errorf("failed to ensure ca bundles presence in namespace %s, %v", ns.Name, err)
 		return err
 	}
 
+	// If "operator.tekton.dev/scc" exists in the namespace, bind that SCC to the SA
+	if err := r.handleSCCInNamespace(ctx, &ns); err != nil {
+		logger.Errorf("failed to bind scc to namespace %s, %v", ns.Name, err)
+		return err
+	}
+
+	roleRef := r.getSCCRoleInNamespace(&ns)
+	if roleRef != nil {
+		if err := r.ensurePipelinesSCCRoleBinding(ctx, sa, roleRef); err != nil {
+			logger.Errorf("failed to create Pipeline Scc Role Binding in namespace %s, %v", ns.Name, err)
+			return err
+		}
+	}
+
+	if err := r.ensureRoleBindings(ctx, sa); err != nil {
+		logger.Errorf("failed to create rolebinding in namespace %s, %v", ns.Name, err)
+		return err
+	}
+
+	return nil
+}
+
+// patch namespace with reconciled label
+func (r *rbac) patchNamespaceLabel(ctx context.Context, ns corev1.Namespace) error {
+	logger := logging.FromContext(ctx)
+
+	logger.Infof("add label namespace-reconcile-version to mark namespace '%s' as reconciled", ns.Name)
+
+	// Prepare a patch to add/update just one label without overwriting others
+	patch := map[string]interface{}{
+		"metadata": map[string]interface{}{
+			"labels": map[string]interface{}{
+				namespaceVersionLabel: r.version,
+			},
+		},
+	}
+
+	patchPayload, err := json.Marshal(patch)
+	if err != nil {
+		logger.Errorf("failed to marshal patch payload: %v", err)
+		return fmt.Errorf("failed to marshal label patch for namespace %s: %w", ns.Name, err)
+	}
+
+	// Use PATCH to update just the target label
+	if _, err := r.kubeClientSet.CoreV1().Namespaces().Patch(ctx, ns.Name, types.StrategicMergePatchType, patchPayload, metav1.PatchOptions{}); err != nil {
+		logger.Errorf("failed to patch namespace %s: %v", ns.Name, err)
+		return fmt.Errorf("failed to patch namespace %s: %w", ns.Name, err)
+	}
+
+	logger.Infof("namespace '%s' successfully reconciled with label %q=%q", ns.Name, namespaceVersionLabel, r.version)
+	return nil
+}
+
+// createresources function refactored for moduularity
+func (r *rbac) createResources(ctx context.Context) error {
+	logger := logging.FromContext(ctx)
+
+	// Step 1: Ensure prerequisites
+	if err := r.ensurePreRequisites(ctx); err != nil {
+		logger.Errorf("error validating resources: %v", err)
+		return err
+	}
+
+	// Step 2: Get namespaces to be reconciled
 	namespacesToBeReconciled, err := r.getNamespacesToBeReconciled(ctx)
 	if err != nil {
 		logger.Error(err)
@@ -387,56 +471,55 @@ func (r *rbac) createResources(ctx context.Context) error {
 	}
 	logger.Debugf("RBAC: found %d namespaces to be reconciled", len(namespacesToBeReconciled))
 
-	// remove and update namespaces from Cluster Interceptors
+	// Step 3: Remove and update namespaces from Cluster Interceptors
 	if err := r.removeAndUpdateNSFromCI(ctx); err != nil {
 		logger.Error(err)
 		return err
 	}
 
-	for _, ns := range namespacesToBeReconciled {
-		logger.Infow("Inject CA bundle configmap in ", "Namespace", ns.GetName())
-		if err := r.ensureCABundles(ctx, &ns); err != nil {
-			return fmt.Errorf("failed to ensure ca bundles presence in namespace %s, %w", ns.Name, err)
-		}
+	// Step 4: Ensure ServiceAccount across all namespaces
+	var namespacesToUpdate []NamespaceServiceAccount
 
-		logger.Infow("Ensures Default SA in ", "Namespace", ns.GetName())
+	// Ensure ServiceAccount for each namespace
+	for _, ns := range namespacesToBeReconciled {
+		// Ensure the ServiceAccount for the namespace
 		sa, err := r.ensureSA(ctx, &ns)
 		if err != nil {
-			return fmt.Errorf("failed to ensure default SA in namespace %s, %w", ns.Name, err)
+			logger.Errorf("Skipping namespace %s as it does not have a valid ServiceAccount: %v", ns.Name, err)
+			// Skip namespaces where SA is not ensured or invalid
 		}
+		if sa != nil {
+			err := r.processNamespace(ctx, sa, ns)
+			if err != nil {
+				logger.Errorf("failed processing namespace %s, %v", ns.Name, err)
+			} else {
+				namespacesToUpdate = append(namespacesToUpdate, NamespaceServiceAccount{
+					ServiceAccount: sa,
+					Namespace:      ns,
+				})
+			}
+		}
+	}
 
-		// If "operator.tekton.dev/scc" exists in the namespace, then bind
-		// that SCC to the SA
-		err = r.handleSCCInNamespace(ctx, &ns)
+	// Step 6: Bulk update ClusterRoleBinding and update labels
+	// Step 6: Bulk update ClusterRoleBinding and update labels
+	if len(namespacesToUpdate) > 0 {
+		if err := r.handleClusterRoleBinding(ctx, namespacesToUpdate); err != nil {
+			logger.Errorf("failed to ensure clusterrolebinding update: %v", err)
+			return err
+		} else {
+			// No namespaces to update, log that no action was needed
+			logger.Infof("No namespaces were processed for ClusterRoleBinding update")
+		}
+	}
+
+	// Step 7: Reconcile namespaces with labels
+
+	for _, eachNS := range namespacesToUpdate {
+		logger.Infof("Reconciling namespace %s", eachNS.Namespace.Name)
+		err := r.patchNamespaceLabel(ctx, eachNS.Namespace)
 		if err != nil {
-			return fmt.Errorf("failed to bind scc to namespace %s; %w", ns.Name, err)
-		}
-
-		// We use a namespace scoped Role when SCC annotation is present, and
-		// a cluster scoped ClusterRole when the default SCC is used
-		roleRef := r.getSCCRoleInNamespace(&ns)
-		if err := r.ensurePipelinesSCCRoleBinding(ctx, sa, roleRef); err != nil {
-			return fmt.Errorf("failed to create Pipeline Scc Role Binding in namespace %s, %w", ns.Name, err)
-		}
-
-		if err := r.ensureRoleBindings(ctx, sa); err != nil {
-			return err
-		}
-
-		if err := r.ensureClusterRoleBindings(ctx, sa); err != nil {
-			return err
-		}
-
-		// Add `openshift-pipelines.tekton.dev/namespace-reconcile-version` label to namespace
-		// so that rbac won't loop on it again
-		nsLabels := ns.GetLabels()
-		if len(nsLabels) == 0 {
-			nsLabels = map[string]string{}
-		}
-		nsLabels[namespaceVersionLabel] = r.version
-		ns.SetLabels(nsLabels)
-		if _, err := r.kubeClientSet.CoreV1().Namespaces().Update(ctx, &ns, metav1.UpdateOptions{}); err != nil {
-			return fmt.Errorf("failed to update namespace %s with label %s, %w", ns.Name, namespaceVersionLabel, err)
+			logger.Errorf("failed reconciling namespace %s, %v", eachNS.Namespace.Name, err)
 		}
 	}
 
@@ -827,6 +910,68 @@ func hasSubject(subjects []rbacv1.Subject, x rbacv1.Subject) bool {
 	return false
 }
 
+// CompareLists compares two slices of rbacv1.Subject, ignoring order
+func CompareSubjects(list1, list2 []rbacv1.Subject) bool {
+	// Check if lengths are different
+	if len(list1) != len(list2) {
+		return false
+	}
+	// Create sets (maps) for both lists
+	set1 := make(map[string]struct{})
+	set2 := make(map[string]struct{})
+
+	// Populate set1 with subjects from list1
+	for _, subject := range list1 {
+		key := fmt.Sprintf("%s/%s/%s", subject.Kind, subject.Name, subject.Namespace)
+		set1[key] = struct{}{}
+	}
+	// Populate set2 with subjects from list2
+	for _, subject := range list2 {
+		key := fmt.Sprintf("%s/%s/%s", subject.Kind, subject.Name, subject.Namespace)
+		set2[key] = struct{}{}
+	}
+
+	// Compare the sets
+	if len(set1) != len(set2) {
+		return false
+	}
+
+	// Check if all elements in set1 are in set2
+	for key := range set1 {
+		if _, exists := set2[key]; !exists {
+			return false
+		}
+	}
+	return true
+}
+
+func mergeSubjects(subjects []rbacv1.Subject, x []rbacv1.Subject) []rbacv1.Subject {
+	// Map to track subjects in the existing list
+	existingSubjects := make(map[string]struct{})
+
+	// Iterate over `subjects` and track each unique combination of Kind, Name, and Namespace
+	for _, subject := range subjects {
+		key := fmt.Sprintf("%s/%s/%s", subject.Kind, subject.Name, subject.Namespace)
+		existingSubjects[key] = struct{}{}
+	}
+
+	// Final list to store the merged subjects
+	var finalSubjects []rbacv1.Subject
+
+	// Add all subjects from the original list (list1)
+	finalSubjects = append(finalSubjects, subjects...)
+
+	// Append subjects from `x` (list2) that are not in `existingSubjects`
+	for _, subject := range x {
+		key := fmt.Sprintf("%s/%s/%s", subject.Kind, subject.Name, subject.Namespace)
+		if _, found := existingSubjects[key]; !found {
+			finalSubjects = append(finalSubjects, subject)
+		}
+	}
+
+	return finalSubjects
+}
+
 func hasOwnerRefernce(old []metav1.OwnerReference, new metav1.OwnerReference) bool {
 	for _, v := range old {
 		if v.APIVersion == new.APIVersion && v.Kind == new.Kind && v.Name == new.Name {
@@ -836,16 +981,38 @@ func hasOwnerRefernce(old []metav1.OwnerReference, new metav1.OwnerReference) bo
 	return false
 }
 
+func (r *rbac) isLegacyRBACEnabled() bool {
+	for _, v := range r.tektonConfig.Spec.Params {
+		if v.Name == legacyPipelineRbacParamName {
+			return v.Value != "false"
+		}
+	}
+	return true
+}
+
 func (r *rbac) ensureRoleBindings(ctx context.Context, sa *corev1.ServiceAccount) error {
 	logger := logging.FromContext(ctx)
-
-	logger.Infof("finding role-binding: %s/%s", sa.Namespace, PipelineRoleBinding)
 	rbacClient := r.kubeClientSet.RbacV1()
+
+	legacyEnabled := r.isLegacyRBACEnabled()
 
 	editRB, err := rbacClient.RoleBindings(sa.Namespace).Get(ctx, PipelineRoleBinding, metav1.GetOptions{})
 
+	if !legacyEnabled && err == nil {
+		logger.Infof("Legacy Pipeline RBAC is disabled, removing existing role binding %s/%s",
+			editRB.Namespace, editRB.Name)
+		return rbacClient.RoleBindings(sa.Namespace).Delete(ctx, PipelineRoleBinding, metav1.DeleteOptions{})
+	}
+
+	if !legacyEnabled {
+		logger.Infof("Legacy Pipeline RBAC is disabled, skipping role binding creation")
+		return nil
+	}
+
+	logger.Infof("Legacy Pipeline RBAC is enabled")
+
 	if err == nil {
-		logger.Infof("found rolebinding %s/%s", editRB.Namespace, editRB.Name)
+		logger.Infof("Found rolebinding %s/%s, updating if needed", editRB.Namespace, editRB.Name)
 		return r.updateRoleBinding(ctx, editRB, sa, &rbacv1.RoleRef{
 			APIGroup: rbacv1.GroupName,
 			Kind:     "ClusterRole",
@@ -854,6 +1021,7 @@ func (r *rbac) ensureRoleBindings(ctx context.Context, sa *corev1.ServiceAccount
 	}
 
 	if errors.IsNotFound(err) {
+		logger.Infof("Role binding not found, creating new one")
 		return r.createRoleBinding(ctx, sa)
 	}
 
@@ -887,33 +1055,6 @@ func (r *rbac) createRoleBinding(ctx context.Context, sa *corev1.ServiceAccount)
 		return err
 	}
 	return nil
-}
-
-func (r *rbac) ensureClusterRoleBindings(ctx context.Context, sa *corev1.ServiceAccount) error {
-	logger := logging.FromContext(ctx)
-
-	rbacClient := r.kubeClientSet.RbacV1()
-	logger.Info("finding cluster-role ", clusterInterceptors)
-	if _, err := rbacClient.ClusterRoles().Get(ctx, clusterInterceptors, metav1.GetOptions{}); errors.IsNotFound(err) {
-		if e := r.createClusterRole(ctx); e != nil {
-			return e
-		}
-	}
-
-	logger.Info("finding cluster-role-binding ", clusterInterceptors)
-
-	viewCRB, err := rbacClient.ClusterRoleBindings().Get(ctx, clusterInterceptors, metav1.GetOptions{})
-
-	if err == nil {
-		logger.Infof("found clusterrolebinding %s", viewCRB.Name)
-		return r.updateClusterRoleBinding(ctx, viewCRB, sa)
-	}
-
-	if errors.IsNotFound(err) {
-		return r.createClusterRoleBinding(ctx, sa)
-	}
-
-	return err
 }
 
 func (r *rbac) removeAndUpdateNSFromCI(ctx context.Context) error {
@@ -969,14 +1110,61 @@ func removeIndex(s []rbacv1.Subject, index int) []rbacv1.Subject {
 	return append(s[:index], s[index+1:]...)
 }
 
-func (r *rbac) updateClusterRoleBinding(ctx context.Context, rb *rbacv1.ClusterRoleBinding, sa *corev1.ServiceAccount) error {
+func (r *rbac) handleClusterRoleBinding(ctx context.Context, namespacesToUpdate []NamespaceServiceAccount) error {
 	logger := logging.FromContext(ctx)
 
-	subject := rbacv1.Subject{Kind: rbacv1.ServiceAccountKind, Name: sa.Name, Namespace: sa.Namespace}
+	rbacClient := r.kubeClientSet.RbacV1()
+	logger.Info("finding cluster-role ", clusterInterceptors)
+	if _, err := rbacClient.ClusterRoles().Get(ctx, clusterInterceptors, metav1.GetOptions{}); errors.IsNotFound(err) {
+		if e := r.createClusterRole(ctx); e != nil {
+			return e
+		}
+	}
 
-	hasSubject := hasSubject(rb.Subjects, subject)
+	// Prepare a list of Subjects from the namespacesToUpdate
+	var subjects []rbacv1.Subject
+
+	for _, nsSA := range namespacesToUpdate {
+		sa := nsSA.ServiceAccount
+		ns := nsSA.Namespace
+
+		logger.Infof("Processing Subject for ServiceAccount %s in Namespace %s", sa.Name, ns.Name)
+
+		// Create the Subject for the ClusterRoleBinding
+		subject := rbacv1.Subject{
+			Kind:      rbacv1.ServiceAccountKind,
+			Name:      sa.Name,
+			Namespace: sa.Namespace,
+		}
+
+		// Append the subject to the list
+		subjects = append(subjects, subject)
+	}
+
+	logger.Info("finding cluster-role-binding ", clusterInterceptors)
+
+	viewCRB, err := rbacClient.ClusterRoleBindings().Get(ctx, clusterInterceptors, metav1.GetOptions{})
+
+	if err == nil {
+		logger.Infof("found clusterrolebinding %s", viewCRB.Name)
+		return r.bulkUpdateClusterRoleBinding(ctx, viewCRB, subjects)
+	}
+
+	if errors.IsNotFound(err) {
+		logger.Infof("could not find clusterrolebinding %s proceeding to create", viewCRB.Name)
+		return r.bulkCreateClusterRoleBinding(ctx, subjects)
+	}
+
+	return err
+}
+
+// bulk update Cluster rolebinding with all reconciled namespaces and service accounts
+func (r *rbac) bulkUpdateClusterRoleBinding(ctx context.Context, rb *rbacv1.ClusterRoleBinding, subjectlist []rbacv1.Subject) error {
+	logger := logging.FromContext(ctx)
+
+	hasSubject := CompareSubjects(rb.Subjects, subjectlist)
 	if !hasSubject {
-		rb.Subjects = append(rb.Subjects, subject)
+		rb.Subjects = mergeSubjects(rb.Subjects, subjectlist)
 	}
 
 	rbacClient := r.kubeClientSet.RbacV1()
@@ -1008,7 +1196,8 @@ func (r *rbac) updateClusterRoleBinding(ctx context.Context, rb *rbacv1.ClusterR
 	return nil
 }
 
-func (r *rbac) createClusterRoleBinding(ctx context.Context, sa *corev1.ServiceAccount) error {
+// create Cluster rolebinding with all reconciled namespaces and service accounts
+func (r *rbac) bulkCreateClusterRoleBinding(ctx context.Context, subjectlist []rbacv1.Subject) error {
 	logger := logging.FromContext(ctx)
 
 	logger.Info("create new clusterrolebinding ", clusterInterceptors)
@@ -1026,7 +1215,7 @@ func (r *rbac) createClusterRoleBinding(ctx context.Context, sa *corev1.ServiceA
 			OwnerReferences: []metav1.OwnerReference{r.ownerRef},
 		},
 		RoleRef:  rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: clusterInterceptors},
-		Subjects: []rbacv1.Subject{{Kind: rbacv1.ServiceAccountKind, Name: sa.Name, Namespace: sa.Namespace}},
+		Subjects: subjectlist,
 	}
 
 	if _, err := rbacClient.ClusterRoleBindings().Create(ctx, crb, metav1.CreateOptions{}); err != nil {

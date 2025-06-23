@@ -30,6 +30,9 @@ type CommonVerifyOptions struct {
 	// it for other verify options.
 	ExperimentalOCI11     bool
 	PrivateInfrastructure bool
+	UseSignedTimestamps   bool
+	NewBundleFormat       bool
+	TrustedRootPath       string
 }
 
 func (o *CommonVerifyOptions) AddFlags(cmd *cobra.Command) {
@@ -39,6 +42,9 @@ func (o *CommonVerifyOptions) AddFlags(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&o.TSACertChainPath, "timestamp-certificate-chain", "",
 		"path to PEM-encoded certificate chain file for the RFC3161 timestamp authority. Must contain the root CA certificate. "+
 			"Optionally may contain intermediate CA certificates, and may contain the leaf TSA certificate if not present in the timestamp")
+
+	cmd.Flags().BoolVar(&o.UseSignedTimestamps, "use-signed-timestamps", false,
+		"verify rfc3161 timestamps")
 
 	cmd.Flags().BoolVar(&o.IgnoreTlog, "insecure-ignore-tlog", false,
 		"ignore transparency log verification, to be used when an artifact signature has not been uploaded to the transparency log. Artifacts "+
@@ -52,6 +58,13 @@ func (o *CommonVerifyOptions) AddFlags(cmd *cobra.Command) {
 
 	cmd.Flags().IntVar(&o.MaxWorkers, "max-workers", cosign.DefaultMaxWorkers,
 		"the amount of maximum workers for parallel executions")
+
+	cmd.Flags().StringVar(&o.TrustedRootPath, "trusted-root", "",
+		"Path to a Sigstore TrustedRoot JSON file. Requires --new-bundle-format to be set.")
+
+	// TODO: have this default to true as a breaking change
+	cmd.Flags().BoolVar(&o.NewBundleFormat, "new-bundle-format", false,
+		"expect the signature/attestation to be packaged in a Sigstore bundle")
 }
 
 // VerifyOptions is the top level wrapper for the `verify` command.
@@ -88,22 +101,25 @@ func (o *VerifyOptions) AddFlags(cmd *cobra.Command) {
 
 	cmd.Flags().StringVar(&o.Key, "key", "",
 		"path to the public key file, KMS URI or Kubernetes Secret")
-	_ = cmd.Flags().SetAnnotation("key", cobra.BashCompFilenameExt, []string{})
+	_ = cmd.MarkFlagFilename("key", publicKeyExts...)
 
 	cmd.Flags().BoolVar(&o.CheckClaims, "check-claims", true,
 		"whether to check the claims found")
 
 	cmd.Flags().StringVar(&o.Attachment, "attachment", "",
 		"DEPRECATED, related image attachment to verify (sbom), default none")
+	_ = cmd.MarkFlagFilename("attachment", sbomExts...)
 
 	cmd.Flags().StringVarP(&o.Output, "output", "o", "json",
 		"output format for the signing image information (json|text)")
 
 	cmd.Flags().StringVar(&o.SignatureRef, "signature", "",
 		"signature content or path or remote URL")
+	_ = cmd.MarkFlagFilename("signature", signatureExts...)
 
 	cmd.Flags().StringVar(&o.PayloadRef, "payload", "",
 		"payload path or remote URL")
+	// _ = cmd.MarkFlagFilename("payload") // no typical extensions
 
 	cmd.Flags().BoolVar(&o.LocalImage, "local-image", false,
 		"whether the specified image is a path to an image saved locally via 'cosign save'")

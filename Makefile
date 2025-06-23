@@ -1,14 +1,15 @@
-# include operatorhub/Makefile
+include operatorhub/Makefile
 
 MODULE   = $(shell env GO111MODULE=on $(GO) list -m)
 DATE         ?= $(shell date +%FT%T%z)
 KO_DATA_PATH  = $(shell pwd)/cmd/$(TARGET)/operator/kodata
 TARGET        = kubernetes
+COMPONENT ?= components.yaml
 FORCE_FETCH_RELEASE = false
 CR            = config/basic
 PLATFORM := $(if $(PLATFORM),--platform $(PLATFORM))
 
-GOLANGCI_VERSION  = v1.57.2
+GOLANGCI_VERSION  = v1.63.4
 
 BIN      = $(CURDIR)/.bin
 
@@ -44,6 +45,7 @@ GOLANGCILINT = $(or ${GOLANGCILINT_BIN},${GOLANGCILINT_BIN},$(BIN)/golangci-lint
 $(BIN)/golangci-lint: | $(BIN) ; $(info $(M) getting golangci-lint $(GOLANGCI_VERSION))
 	@curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(BIN) $(GOLANGCI_VERSION)
 
+##@ Clean 
 .PHONY: clean-cluster
 clean-cluster: | $(KO) $(KUSTOMIZE) clean-cr; $(info $(M) clean $(TARGET)…) @ ## Cleanup cluster
 	@ ## --load-restrictor LoadRestrictionsNone is needed in kustomize build as files which not in child tree of kustomize base are pulled
@@ -65,9 +67,10 @@ ifeq ($(TARGET), openshift)
 	rm -rf ./cmd/$(TARGET)/operator/kodata/tekton-results
 	rm -rf ./cmd/$(TARGET)/operator/kodata/manual-approval-gate
 	rm -rf ./cmd/$(TARGET)/operator/kodata/tekton-pruner
+	rm -rf ./cmd/$(TARGET)/operator/kodata/pruner
 	rm -rf ./cmd/$(TARGET)/operator/kodata/tekton-addon/pipelines-as-code
-	rm -rf ./cmd/$(TARGET)/operator/kodata/tekton-addon/addons/02-clustertasks/source_external/
-	rm -rf ./cmd/$(TARGET)/operator/kodata/tekton-addon/addons/07-ecosystem/task-*
+	rm -rf ./cmd/$(TARGET)/operator/kodata/tekton-addon/addons/06-ecosystem/tasks
+	rm -rf ./cmd/$(TARGET)/operator/kodata/tekton-addon/addons/06-ecosystem/stepactions
 	rm -rf ./cmd/$(TARGET)/operator/kodata/tekton-addon/pipelines-as-code-templates/go.yaml
 	rm -rf ./cmd/$(TARGET)/operator/kodata/tekton-addon/pipelines-as-code-templates/java.yaml
 	rm -rf ./cmd/$(TARGET)/operator/kodata/tekton-addon/pipelines-as-code-templates/nodejs.yaml
@@ -75,11 +78,12 @@ ifeq ($(TARGET), openshift)
 	rm -rf ./cmd/$(TARGET)/operator/kodata/tekton-addon/pipelines-as-code-templates/generic.yaml
 else
 	rm -rf ./cmd/$(TARGET)/operator/kodata/tekton*
+	rm -rf ./cmd/$(TARGET)/operator/kodata/pruner
 	rm -rf ./cmd/$(TARGET)/operator/kodata/manual-approval-gate
 endif
 
-.PHONY: clean-bin
-clean-bin:
+.PHONY: clean-bin # Clean binary
+clean-bin: 
 	-rm -rf $(BIN)
 	-rm -rf bin
 	-rm -rf test/tests.* test/coverage.*
@@ -87,28 +91,51 @@ clean-bin:
 .PHONY: clean
 clean: clean-cluster clean-bin clean-manifest; $(info $(M) clean all) @ ## Cleanup everything
 
+.PHONY: clean-manifest
+clean-manifest: clean-manifest ## Cleanup manifest
+
+.PHONY: clean-cr
+clean-cr: | ; $(info $(M) clean CRs on $(TARGET)) @ ## Clean the CRs to the current cluster
+	-$Q kubectl delete -f config/crs/$(TARGET)/$(CR)
+
+##@ General
 .PHONY: help
-help:
-	@grep -hE '^[ a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
-		awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-17s\033[0m %s\n", $$1, $$2}'
+help: ## print this help
+	@awk 'BEGIN {FS = ":.*##"; printf "\nUsage:\n  make \033[36m<target>\033[0m\n"} /^[a-zA-Z_0-9-]+:.*?##/ { printf "  \033[36m%-15s\033[0m %s\n", $$1, $$2 } /^##@/ { printf "\n\033[1m%s\033[0m\n", substr($$0, 5) } ' $(MAKEFILE_LIST)
 
 FORCE:
 
 bin/%: cmd/% FORCE
 	$Q $(GO) build -mod=vendor $(LDFLAGS) -v -o $@ ./$<
 
-.PHONY: components/bump
-components/bump: $(OPERATORTOOL)
-	@go run ./cmd/tool bump components.yaml
+.PHONY: resolve
+resolve: | $(KO) $(KUSTOMIZE) get-releases ; $(info $(M) ko resolve on $(TARGET)) @ ## Resolve config to the current cluster
+	@ ## --load-restrictor LoadRestrictionsNone is needed in kustomize build as files which not in child tree of kustomize base are pulled
+	@ ## https://github.com/kubernetes-sigs/kustomize/issues/766
+	$Q $(KUSTOMIZE) build --load-restrictor LoadRestrictionsNone config/$(TARGET)/overlays/default | $(KO) resolve --push=false --platform=all --oci-layout-path=$(BIN)/oci -f -
+
+.PHONY: generated
+generated: | vendor ; $(info $(M) update generated files) ## Update generated files
+	$Q ./hack/update-codegen.sh
+
+.PHONY: vendor
+vendor: ; $(info $(M) update vendor folder)  ## Update vendor folder
+	$Q ./hack/update-deps.sh
+
+##@ Bump Components Version
+.PHONY: components/bump  
+components/bump: $(OPERATORTOOL) ## Bump the version of a component 
+	@go run ./cmd/tool bump ${COMPONENT}
 
 .PHONY: components/bump-bugfix
-components/bump-bugfix: $(OPERATORTOOL)
-	@go run ./cmd/tool bump --bugfix components.yaml
+components/bump-bugfix: $(OPERATORTOOL)  ## Bump bump-bugfix
+	@go run ./cmd/tool bump --bugfix ${COMPONENT}
 
 .PHONY: get-releases
-get-releases: |
-	$Q ./hack/fetch-releases.sh $(TARGET) components.yaml $(FORCE_FETCH_RELEASE) || exit ;
+get-releases: | ## Get releases
+	$Q ./hack/fetch-releases.sh $(TARGET) ${COMPONENT} $(FORCE_FETCH_RELEASE) || exit ;
 
+##@ Apply
 .PHONY: apply
 apply: | $(KO) $(KUSTOMIZE) get-releases ; $(info $(M) ko apply on $(TARGET)) @ ## Apply config to the current cluster
 	@ ## --load-restrictor LoadRestrictionsNone is needed in kustomize build as files which not in child tree of kustomize base are pulled
@@ -119,35 +146,39 @@ apply: | $(KO) $(KUSTOMIZE) get-releases ; $(info $(M) ko apply on $(TARGET)) @ 
 apply-cr: | ; $(info $(M) apply CRs on $(TARGET)) @ ## Apply the CRs to the current cluster
 	$Q kubectl apply -f config/crs/$(TARGET)/$(CR)
 
+##@ Bundle
+
 .PHONY: operator-bundle
-operator-bundle:
-	make -C operatorhub operator-bundle
+operator-bundle: bundle-generate ## Generate the operator bundle manifests
+	@echo "Operator bundle created successfully."
 
-.PHONY: clean-cr
-clean-cr: | ; $(info $(M) clean CRs on $(TARGET)) @ ## Clean the CRs to the current cluster
-	-$Q kubectl delete -f config/crs/$(TARGET)/$(CR)
+.PHONY: operator-bundle-build
+operator-bundle-build: bundle-build ## Build the operator bundle image
+	@echo "Building the bundle image: $(BUNDLE_IMG)"
 
-.PHONY: resolve
-resolve: | $(KO) $(KUSTOMIZE) get-releases ; $(info $(M) ko resolve on $(TARGET)) @ ## Resolve config to the current cluster
-	@ ## --load-restrictor LoadRestrictionsNone is needed in kustomize build as files which not in child tree of kustomize base are pulled
-	@ ## https://github.com/kubernetes-sigs/kustomize/issues/766
-	$Q $(KUSTOMIZE) build --load-restrictor LoadRestrictionsNone config/$(TARGET)/overlays/default | $(KO) resolve --push=false --oci-layout-path=$(BIN)/oci -f -
+.PHONY: operator-bundle-push
+operator-bundle-push: bundle-push  ## Push the operator bundle to the registry
+	@echo "Operator bundle pushed successfully."
 
-.PHONY: generated
-generated: | vendor ; $(info $(M) update generated files) ## Update generated files
-	$Q ./hack/update-codegen.sh
+.PHONY: operator-catalog-build
+operator-catalog-build: catalog-build ## Build a file-based OLM catalog image containing a released operator bundle.
+	@echo "Operator catalog built successfully."
 
-.PHONY: vendor
-vendor: ; $(info $(M) update vendor folder)  ## Update vendor folder
-	$Q ./hack/update-deps.sh
+.PHONY: operator-catalog-push
+operator-catalog-push: catalog-push ## Build and push an OLM catalog image with a released operator bundle.
+	@echo "Operator catalog pushed successfully."
 
+.PHONY: operator-catalog-run
+operator-catalog-run: catalog-run ## Run the operator from a catalog image, using an OLM subscription
+	@echo "Operator catalog run successfully."
 
-## Tests
+##@ Tests
 GO           = go
-TEST_UNIT_TARGETS := test-unit-verbose test-unit-race test-unit-failfast
+TEST_UNIT_TARGETS := test-unit-verbose test-unit-race test-unit-failfast test-unit-verbose-and-race
 test-unit-verbose: ARGS=-v
 test-unit-failfast: ARGS=-failfast
 test-unit-race:    ARGS=-race
+test-unit-verbose-and-race: ARGS=-v -race
 $(TEST_UNIT_TARGETS): test-unit
 test-clean:  ## Clean testcache
 	@echo "Cleaning test cache"
@@ -156,8 +187,7 @@ test-clean:  ## Clean testcache
 test: test-clean test-unit ## Run test-unit
 test-unit: ## Run unit tests
 	@echo "Running unit tests..."
-	@set -o pipefail ; \
-		$(GO) test -timeout $(TIMEOUT_UNIT) $(ARGS) ./... | { grep -v 'no test files'; true; }
+	$Q $(GO) test -timeout $(TIMEOUT_UNIT) $(ARGS) ./...
 
 
 .PHONY: lint

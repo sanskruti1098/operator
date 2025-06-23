@@ -88,8 +88,10 @@ type TektonConfigSpec struct {
 	Config Config `json:"config,omitempty"`
 	// Pruner holds the prune config
 	// +optional
-	Pruner     Prune `json:"pruner,omitempty"`
-	CommonSpec `json:",inline"`
+	Pruner Prune `json:"pruner,omitempty"`
+	// New EventBasedPruner which provides more granular control over TaskRun and PipelineRuns
+	TektonPruner Pruner `json:"tektonpruner,omitempty"`
+	CommonSpec   `json:",inline"`
 	// Addon holds the addons config
 	// +optional
 	Addon Addon `json:"addon,omitempty"`
@@ -105,6 +107,9 @@ type TektonConfigSpec struct {
 	// Chain holds the customizable option for chains component
 	// +optional
 	Chain Chain `json:"chain,omitempty"`
+	// Result holds the customize option for results component
+	// +optional
+	Result Result `json:"result,omitempty"`
 	// Dashboard holds the customizable options for dashboards component
 	// +optional
 	Dashboard Dashboard `json:"dashboard,omitempty"`
